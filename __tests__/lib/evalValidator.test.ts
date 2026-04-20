@@ -5,6 +5,8 @@ import {
   hasBadPlaceholders,
   isSchemaGoodEnough,
   parseJsonStrict,
+  checkSemanticQuality,
+  validateResultDetailed,
 } from "@/lib/eval-validator";
 
 describe("stripMarkdownFences", () => {
@@ -18,20 +20,32 @@ describe("stripMarkdownFences", () => {
 });
 
 describe("isLikelyGerman", () => {
-  it("detects German text", () => {
-    expect(isLikelyGerman("Das ist ein Test und es funktioniert nicht ohne Aufwand")).toBe(true);
+  it("detects German text with multiple keywords", () => {
+    expect(isLikelyGerman("Das ist ein Test und es funktioniert nicht ohne Aufwand und zusätzlich")).toBe(true);
   });
 
   it("rejects English text", () => {
-    expect(isLikelyGerman("This is a test and it works")).toBe(false);
+    expect(isLikelyGerman("This is a test and it works fine for everyone")).toBe(false);
   });
 
   it("rejects empty text", () => {
     expect(isLikelyGerman("")).toBe(false);
   });
 
-  it("detects umlauts as German indicator", () => {
+  it("detects umlauts as strong German indicator", () => {
     expect(isLikelyGerman("Änderungen für die Überprüfung")).toBe(true);
+  });
+
+  it("detects bigrams", () => {
+    expect(isLikelyGerman("Es gibt viele Möglichkeiten, zum Beispiel das hier")).toBe(true);
+  });
+
+  it("requires higher threshold than before", () => {
+    expect(isLikelyGerman("und oder")).toBe(false);
+  });
+
+  it("detects ß and umlauts as strong indicators", () => {
+    expect(isLikelyGerman("Außerdem ist das Projekt grundsätzlich machbar und überschaubar")).toBe(true);
   });
 });
 
@@ -100,5 +114,77 @@ describe("parseJsonStrict", () => {
   it("strips markdown fences before parsing", () => {
     const result = parseJsonStrict('```json\n{"key": "value"}\n```');
     expect(result.ok).toBe(true);
+  });
+});
+
+describe("checkSemanticQuality", () => {
+  const baseResult = {
+    reasoning: "Dieser Job erfordert eine Landing Page mit Next.js und Tailwind CSS. Das passt zum Profil.",
+    risks: ["Figma-Designs könnten komplex sein", "Stripe braucht Testumgebung", "Responsive Edge-Cases"],
+    overall_score: 8,
+    criteria: { scope_clarity: 8, low_integration_ops_complexity: 7, solo_delivery_fit: 9 },
+  };
+
+  it("returns no warnings for good result", () => {
+    const { warnings } = checkSemanticQuality(baseResult, "Build a landing page with Next.js and Tailwind CSS");
+    expect(warnings).toHaveLength(0);
+  });
+
+  it("warns when reasoning has no job reference", () => {
+    const { warnings } = checkSemanticQuality(
+      { ...baseResult, reasoning: "Das ist ein guter Job und es passt zum Profil." },
+      "Build a complex microservice architecture with Kubernetes",
+    );
+    expect(warnings.some((w) => w.includes("reasoning"))).toBe(true);
+  });
+
+  it("warns on numbered risks", () => {
+    const { warnings } = checkSemanticQuality(
+      { ...baseResult, risks: ["Risiko 1: etwas", "Risiko 2: etwas anderes", "Risk 3: noch etwas"] },
+      "Build a landing page with Next.js",
+    );
+    expect(warnings.some((w) => w.includes("nummeriert"))).toBe(true);
+  });
+
+  it("warns on score inconsistency (high criteria, low overall)", () => {
+    const { warnings } = checkSemanticQuality(
+      { ...baseResult, overall_score: 3, criteria: { scope_clarity: 9, low_integration_ops_complexity: 9, solo_delivery_fit: 9 } },
+      "Build a landing page",
+    );
+    expect(warnings.some((w) => w.includes("Inkonsistenz"))).toBe(true);
+  });
+});
+
+describe("validateResultDetailed", () => {
+  it("returns errors for null input", () => {
+    const result = validateResultDetailed(null);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("collects multiple errors", () => {
+    const result = validateResultDetailed({
+      viable_build_20h: true,
+      viable_consulting: false,
+      confidence: 7,
+      effort_hours: "4-8",
+      timeline_days: "3-5",
+      price_range: "500-800",
+      overall_score: 7,
+      criteria: { scope_clarity: 8, low_integration_ops_complexity: 7, solo_delivery_fit: 8 },
+      risks: ["R1"],
+      next_steps: ["S1"],
+      clarifying_questions: [],
+      offer_message: "Short",
+      learning_path: [],
+      reasoning: "Kurz",
+      steps: ["Step 1"],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors.length).toBeGreaterThanOrEqual(3);
+    }
   });
 });

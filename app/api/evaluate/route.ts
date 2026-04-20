@@ -7,7 +7,7 @@ import { extractIp, isRateLimited } from "@/lib/rateLimit";
 import { openRouterChat } from "@/lib/llm-client";
 import type { ChatMessage } from "@/lib/llm-client";
 import { getSystemPrompt, REPAIR_SYSTEM_PROMPT } from "@/lib/eval-prompts";
-import { parseJsonStrict, validateResult, isLikelyGerman } from "@/lib/eval-validator";
+import { parseJsonStrict, validateResult, validateResultDetailed, isLikelyGerman, checkSemanticQuality } from "@/lib/eval-validator";
 import { getCached, setCache, jobTextHash } from "@/lib/eval-cache";
 import { evaluateRequestSchema } from "@/lib/schemas";
 import {
@@ -26,6 +26,9 @@ import {
   ASYNC_DEFAULT_REQUEST_TIMEOUT_MS,
   ASYNC_MIN_REQUEST_TIMEOUT_MS,
   ASYNC_MAX_REQUEST_TIMEOUT_MS,
+  LLM_TEMPERATURE,
+  LLM_MAX_TOKENS,
+  LLM_RESPONSE_FORMAT,
 } from "@/lib/constants";
 
 type EvalJobStatus = "queued" | "running" | "done" | "error";
@@ -110,6 +113,11 @@ async function evaluateWithPolicy(params: {
     { role: "system", content: systemPrompt, cache_control: { type: "ephemeral" } },
     { role: "user", content: params.jobText },
   ];
+  const llmParams = {
+    temperature: LLM_TEMPERATURE,
+    max_tokens: LLM_MAX_TOKENS,
+    response_format: LLM_RESPONSE_FORMAT,
+  };
 
   const quality = {
     usedRepair: false,
@@ -132,14 +140,16 @@ async function evaluateWithPolicy(params: {
 
     const parsed = first.ok ? first.parsed : null;
     const cleaned = first.cleaned;
-    const result = validateResult(parsed);
-    if (result) return { ok: true as const, result };
+
+    const detailed = parsed ? validateResultDetailed(parsed) : { ok: false as const, errors: ["Kein gültiges JSON."] };
+    if (detailed.ok) return { ok: true as const, result: detailed.result };
 
     if (!params.repairEnabled || timeLeftMs() < REPAIR_MIN_TIME_LEFT_MS) return { ok: false as const };
     quality.usedRepair = true;
 
+    const errorList = !detailed.ok ? detailed.errors.map((e) => `- ${e}`).join("\n") : "- Unbekannter Fehler";
     const repairUser =
-      `JOBTEXT:\n${params.jobText}\n\nFEHLERHAFTE_ANTWORT (bitte reparieren):\n${cleaned}`;
+      `JOBTEXT:\n${params.jobText}\n\nFEHLER:\n${errorList}\n\nFEHLERHAFTE_ANTWORT (bitte reparieren):\n${cleaned}`;
 
     const repaired = await openRouterChat({
       apiKey: params.apiKey,
@@ -150,6 +160,7 @@ async function evaluateWithPolicy(params: {
       ],
       timeoutMs: Math.min(params.requestTimeoutMs, Math.max(REPAIR_MIN_TIME_LEFT_MS, timeLeftMs() - 200)),
       signal: p.modelSignal,
+      llmParams,
     });
     if (!repaired.ok || !repaired.content) return { ok: false as const };
     const p2 = parseJsonStrict(repaired.content);
@@ -167,6 +178,7 @@ async function evaluateWithPolicy(params: {
       messages: baseMessages,
       timeoutMs: Math.min(params.requestTimeoutMs, Math.max(REPAIR_MIN_TIME_LEFT_MS, timeLeftMs())),
       signal: p.controller.signal,
+      llmParams,
     });
     const latencyMs = Date.now() - t0;
     if (r.emptyContent) quality.emptyContentSeen = true;
@@ -240,7 +252,10 @@ async function evaluateWithPolicy(params: {
     [winner.result.reasoning, ...winner.result.steps, ...winner.result.risks].join("\n"),
   );
 
-  return { ok: true, result: winner.result, jobTextUsed: params.jobText, quality };
+  const semantic = checkSemanticQuality(winner.result, params.jobText);
+  const qualityWithWarnings = { ...quality, semanticWarnings: semantic.warnings };
+
+  return { ok: true, result: winner.result, jobTextUsed: params.jobText, quality: qualityWithWarnings };
 }
 
 function buildLogMeta(metaRaw: unknown): Record<string, unknown> | undefined {

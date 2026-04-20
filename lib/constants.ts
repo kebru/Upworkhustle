@@ -8,8 +8,8 @@ export const MAX_JOB_CHARS = 48_000;
 export const PER_JOB_MAX_CHARS = 20_000;
 
 // ── Evaluate Defaults ──
-export const DEFAULT_DEADLINE_MS = 10_000;
-export const DEFAULT_REQUEST_TIMEOUT_MS = 9_000;
+export const DEFAULT_DEADLINE_MS = 15_000;
+export const DEFAULT_REQUEST_TIMEOUT_MS = 12_000;
 export const MIN_DEADLINE_MS = 3_000;
 export const MAX_DEADLINE_MS = 30_000;
 export const MIN_REQUEST_TIMEOUT_MS = 2_000;
@@ -17,16 +17,21 @@ export const MAX_REQUEST_TIMEOUT_MS = 30_000;
 export const REPAIR_MIN_TIME_LEFT_MS = 2_000;
 
 // ── Async Evaluate Defaults ──
-export const ASYNC_DEFAULT_DEADLINE_MS = 60_000;
+export const ASYNC_DEFAULT_DEADLINE_MS = 90_000;
 export const ASYNC_MIN_DEADLINE_MS = 10_000;
 export const ASYNC_MAX_DEADLINE_MS = 180_000;
-export const ASYNC_DEFAULT_REQUEST_TIMEOUT_MS = 25_000;
+export const ASYNC_DEFAULT_REQUEST_TIMEOUT_MS = 35_000;
 export const ASYNC_MIN_REQUEST_TIMEOUT_MS = 5_000;
 export const ASYNC_MAX_REQUEST_TIMEOUT_MS = 60_000;
 
 // ── LLM Models ──
-export const PRIMARY_MODEL_DEFAULT = "google/gemini-3-flash-preview";
-export const FALLBACK_MODEL_DEFAULT = "openai/gpt-5.4-mini";
+export const PRIMARY_MODEL_DEFAULT = "google/gemini-2.5-pro-preview";
+export const FALLBACK_MODEL_DEFAULT = "openai/gpt-4.1-mini";
+
+// ── LLM Parameters ──
+export const LLM_TEMPERATURE = 0.3;
+export const LLM_MAX_TOKENS = 4096;
+export const LLM_RESPONSE_FORMAT = { type: "json_object" } as const;
 
 // ── Schema Validation ──
 export const MIN_RISKS = 3;

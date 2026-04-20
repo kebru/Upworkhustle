@@ -18,6 +18,11 @@ export async function openRouterChat(params: {
   messages: ChatMessage[];
   timeoutMs: number;
   signal?: AbortSignal;
+  llmParams?: {
+    temperature?: number;
+    max_tokens?: number;
+    response_format?: { type: string };
+  };
 }): Promise<ChatResult> {
   const ctrl = new AbortController();
   const timeoutSignal =
@@ -49,6 +54,9 @@ export async function openRouterChat(params: {
       body: JSON.stringify({
         model: params.model,
         messages: params.messages,
+        ...(params.llmParams?.temperature !== undefined && { temperature: params.llmParams.temperature }),
+        ...(params.llmParams?.max_tokens !== undefined && { max_tokens: params.llmParams.max_tokens }),
+        ...(params.llmParams?.response_format && { response_format: params.llmParams.response_format }),
       }),
       signal,
     });

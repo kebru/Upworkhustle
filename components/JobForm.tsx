@@ -1,14 +1,20 @@
 "use client";
 
 import { useState } from "react";
+import type { JobType } from "@/lib/eval-prompts";
+
+const JOB_TYPES: JobType[] = ["Automatisch", "Web Development", "Data & ML", "Design", "Consulting"];
 
 type Props = {
-  onSubmit: (text: string) => void;
+  onSubmit: (text: string, jobType: JobType, offerTemplateId?: string) => void;
   loading: boolean;
+  offerTemplates?: { id: string; name: string }[];
 };
 
-export function JobForm({ onSubmit, loading }: Props) {
+export function JobForm({ onSubmit, loading, offerTemplates }: Props) {
   const [jobText, setJobText] = useState("");
+  const [jobType, setJobType] = useState<JobType>("Automatisch");
+  const [templateId, setTemplateId] = useState<string>("");
 
   function handleJobPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
     const html = e.clipboardData.getData("text/html");
@@ -35,7 +41,7 @@ export function JobForm({ onSubmit, loading }: Props) {
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    onSubmit(jobText);
+    onSubmit(jobText, jobType, templateId || undefined);
   }
 
   return (
@@ -65,6 +71,35 @@ export function JobForm({ onSubmit, loading }: Props) {
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-4">
+        <div className="flex flex-wrap gap-3">
+          <div>
+            <label htmlFor="jobType" className="mb-1 block text-xs font-medium text-muted">Job-Typ</label>
+            <select
+              id="jobType"
+              value={jobType}
+              onChange={(e) => setJobType(e.target.value as JobType)}
+              disabled={loading}
+              className="rounded-md border border-white/15 bg-surface px-3 py-2 text-sm text-white outline-none focus:ring-1 focus:ring-accent"
+            >
+              {JOB_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
+          {offerTemplates && offerTemplates.length > 0 && (
+            <div>
+              <label htmlFor="offerTpl" className="mb-1 block text-xs font-medium text-muted">Angebotsvorlage</label>
+              <select
+                id="offerTpl"
+                value={templateId}
+                onChange={(e) => setTemplateId(e.target.value)}
+                disabled={loading}
+                className="rounded-md border border-white/15 bg-surface px-3 py-2 text-sm text-white outline-none focus:ring-1 focus:ring-accent"
+              >
+                <option value="">Keine</option>
+                {offerTemplates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
+            </div>
+          )}
+        </div>
         <div>
           <label
             htmlFor="job"
@@ -80,7 +115,7 @@ export function JobForm({ onSubmit, loading }: Props) {
             onKeyDown={(e) => {
               if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && !loading && jobText.trim()) {
                 e.preventDefault();
-                onSubmit(jobText);
+                onSubmit(jobText, jobType, templateId || undefined);
               }
             }}
             rows={18}

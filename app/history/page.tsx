@@ -81,7 +81,7 @@ function TagInput({ tags, onChange }: { tags: string[]; onChange: (t: string[]) 
 }
 
 export default function HistoryPage() {
-  const { entries, remove, update, toggleStar, hydrated } = useEvaluationHistory();
+  const { entries, remove, update, toggleStar, removeMany, updateMany, toggleStarMany, hydrated } = useEvaluationHistory();
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortKey>("date-desc");
@@ -89,7 +89,9 @@ export default function HistoryPage() {
   const [dateFilter, setDateFilter] = useState<DateFilter>("all");
   const [starredOnly, setStarredOnly] = useState(false);
   const [tagFilter, setTagFilter] = useState<string | null>(null);
-  const [compareIds, setCompareIds] = useState<Set<string>>(new Set());
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkTagInput, setBulkTagInput] = useState("");
+  const [showBulkTagInput, setShowBulkTagInput] = useState(false);
 
   const allTags = useMemo(() => {
     const set = new Set<string>();
@@ -152,18 +154,89 @@ export default function HistoryPage() {
           </p>
         </div>
         <div className="flex gap-2">
-          {compareIds.size >= 2 && (
-            <a
-              href={`/compare?ids=${Array.from(compareIds).join(",")}`}
-              className="rounded-lg border border-accent bg-accent/20 px-3 py-1.5 text-xs font-semibold text-accent transition hover:bg-accent/30 sm:text-sm"
-            >
-              {compareIds.size} vergleichen
-            </a>
-          )}
           <button type="button" onClick={() => exportAsJson(filtered)} className="rounded-lg border border-accent/50 bg-transparent px-3 py-1.5 text-xs font-semibold text-accent transition hover:bg-accent/10 sm:text-sm">JSON</button>
           <button type="button" onClick={() => exportAsCsv(filtered)} className="rounded-lg border border-accent/50 bg-transparent px-3 py-1.5 text-xs font-semibold text-accent transition hover:bg-accent/10 sm:text-sm">CSV</button>
         </div>
       </div>
+
+      {/* Bulk Actions Toolbar */}
+      {selectedIds.size > 0 && (
+        <div className="sticky top-0 z-30 flex flex-wrap items-center gap-2 rounded-lg border border-accent/40 bg-surface/95 px-4 py-3 shadow-lg backdrop-blur-sm">
+          <span className="text-sm font-medium text-white">{selectedIds.size} ausgewählt</span>
+          <div className="mx-1 h-5 w-px bg-white/15" />
+          {selectedIds.size >= 2 && selectedIds.size <= 3 && (
+            <a
+              href={`/compare?ids=${Array.from(selectedIds).join(",")}`}
+              className="rounded-md border border-accent/50 px-2.5 py-1 text-xs font-semibold text-accent transition hover:bg-accent/10"
+            >
+              Vergleichen
+            </a>
+          )}
+          <button
+            type="button"
+            onClick={() => toggleStarMany(Array.from(selectedIds))}
+            className="rounded-md border border-yellow-400/40 px-2.5 py-1 text-xs text-yellow-300 transition hover:bg-yellow-400/10"
+          >
+            ★ Toggle
+          </button>
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setShowBulkTagInput(!showBulkTagInput)}
+              className="rounded-md border border-white/15 px-2.5 py-1 text-xs text-muted transition hover:text-white"
+            >
+              Tag hinzufügen
+            </button>
+            {showBulkTagInput && (
+              <div className="absolute left-0 top-full z-40 mt-1 flex items-center gap-1 rounded-lg border border-white/20 bg-surface p-2 shadow-xl">
+                <input
+                  value={bulkTagInput}
+                  onChange={(e) => setBulkTagInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && bulkTagInput.trim()) {
+                      updateMany(Array.from(selectedIds), { tags: [bulkTagInput.trim()] });
+                      setBulkTagInput("");
+                      setShowBulkTagInput(false);
+                    }
+                    if (e.key === "Escape") setShowBulkTagInput(false);
+                  }}
+                  placeholder="Tag…"
+                  autoFocus
+                  className="w-28 rounded-md border border-white/15 bg-black/30 px-2 py-1 text-xs text-white outline-none focus:ring-1 focus:ring-accent"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (bulkTagInput.trim()) {
+                      updateMany(Array.from(selectedIds), { tags: [bulkTagInput.trim()] });
+                      setBulkTagInput("");
+                      setShowBulkTagInput(false);
+                    }
+                  }}
+                  className="rounded-md bg-accent px-2 py-1 text-xs font-semibold text-background"
+                >
+                  OK
+                </button>
+              </div>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => { removeMany(Array.from(selectedIds)); setSelectedIds(new Set()); }}
+            className="rounded-md border border-red-500/40 px-2.5 py-1 text-xs text-red-300 transition hover:bg-red-500/20"
+          >
+            {selectedIds.size} löschen
+          </button>
+          <div className="mx-1 h-5 w-px bg-white/15" />
+          <button
+            type="button"
+            onClick={() => { setSelectedIds(new Set()); setShowBulkTagInput(false); }}
+            className="rounded-md border border-white/15 px-2.5 py-1 text-xs text-muted transition hover:text-white"
+          >
+            Auswahl aufheben
+          </button>
+        </div>
+      )}
 
       {/* Filter Bar */}
       <div className="flex flex-wrap items-center gap-2 rounded-lg border border-white/10 bg-surface/40 p-3">
@@ -209,20 +282,20 @@ export default function HistoryPage() {
       <ul className="space-y-3">
         {filtered.map((item) => {
           const expanded = expandedId === item.id;
-          const isCompare = compareIds.has(item.id);
+          const isSelected = selectedIds.has(item.id);
           return (
-            <li key={item.id} className={`overflow-hidden rounded-xl border bg-surface/60 ${isCompare ? "border-accent/50" : "border-white/10"}`}>
+            <li key={item.id} className={`overflow-hidden rounded-xl border bg-surface/60 ${isSelected ? "border-accent/50" : "border-white/10"}`}>
               <div className="flex items-stretch gap-2 px-2 py-2 sm:px-4 sm:py-3">
-                {/* Compare checkbox */}
+                {/* Selection checkbox */}
                 <label className="flex shrink-0 cursor-pointer items-center self-center px-1">
                   <input
                     type="checkbox"
-                    checked={isCompare}
+                    checked={isSelected}
                     onChange={() => {
-                      setCompareIds((prev) => {
+                      setSelectedIds((prev) => {
                         const next = new Set(prev);
                         if (next.has(item.id)) next.delete(item.id);
-                        else if (next.size < 3) next.add(item.id);
+                        else next.add(item.id);
                         return next;
                       });
                     }}

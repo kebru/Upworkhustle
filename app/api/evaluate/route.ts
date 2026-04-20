@@ -6,7 +6,7 @@ import { parseEvaluationResultV2 } from "@/lib/parseEvaluationResult";
 import { extractIp, isRateLimited } from "@/lib/rateLimit";
 import { openRouterChat } from "@/lib/llm-client";
 import type { ChatMessage } from "@/lib/llm-client";
-import { SYSTEM_PROMPT, REPAIR_SYSTEM_PROMPT } from "@/lib/eval-prompts";
+import { getSystemPrompt, REPAIR_SYSTEM_PROMPT } from "@/lib/eval-prompts";
 import { parseJsonStrict, validateResult, isLikelyGerman } from "@/lib/eval-validator";
 import { getCached, setCache, jobTextHash } from "@/lib/eval-cache";
 import { evaluateRequestSchema } from "@/lib/schemas";
@@ -79,6 +79,8 @@ async function evaluateWithPolicy(params: {
   hedgeEnabled: boolean;
   deadlineMs: number;
   requestTimeoutMs: number;
+  jobType?: string;
+  offerTemplate?: string;
 }): Promise<
   | {
       ok: true;
@@ -103,8 +105,9 @@ async function evaluateWithPolicy(params: {
 
   const deadlineCtrl = new AbortController();
   const deadlineTimer = setTimeout(() => deadlineCtrl.abort(), params.deadlineMs);
+  const systemPrompt = getSystemPrompt(params.jobType, params.offerTemplate);
   const baseMessages: ChatMessage[] = [
-    { role: "system", content: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
+    { role: "system", content: systemPrompt, cache_control: { type: "ephemeral" } },
     { role: "user", content: params.jobText },
   ];
 
@@ -321,6 +324,8 @@ export async function POST(request: Request) {
   const rawJob = parsed.data.jobText.trim();
   const metaRaw = parsed.data.meta;
   const asyncMode = parsed.data.async;
+  const jobType = parsed.data.jobType;
+  const offerTemplate = parsed.data.offerTemplate;
 
   let toNormalize = rawJob;
   if (looksLikeHtml(rawJob)) {
@@ -398,6 +403,7 @@ export async function POST(request: Request) {
           const r = await evaluateWithPolicy({
             apiKey, jobText, primaryModel, fallbackModel, repairEnabled, hedgeEnabled,
             deadlineMs: asyncDeadlineMs, requestTimeoutMs: asyncReqTimeoutMs,
+            jobType, offerTemplate,
           });
 
           const rr = evalJobs.get(jobId);
@@ -443,7 +449,7 @@ export async function POST(request: Request) {
 
     const r = await evaluateWithPolicy({
       apiKey, jobText, primaryModel, fallbackModel, repairEnabled, hedgeEnabled,
-      deadlineMs, requestTimeoutMs,
+      deadlineMs, requestTimeoutMs, jobType, offerTemplate,
     });
 
     if (!r.ok) {

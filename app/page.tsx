@@ -10,9 +10,13 @@ import { useEvaluationHistory } from "@/hooks/useEvaluationHistory";
 import { useSeenJobs } from "@/hooks/useSeenJobs";
 import { normalizeJobText } from "@/lib/normalizeJobInput";
 import { splitJobPostings } from "@/lib/splitJobs";
-import { parseJobs, startEvaluation, pollEvaluation } from "@/lib/api-client";
+import { parseJobs, startEvaluation, pollEvaluation, streamEvaluation } from "@/lib/api-client";
+import type { PollResp } from "@/lib/api-client";
 import { POLL_INTERVAL_MS, POLL_TIMEOUT_MS, CONCURRENCY } from "@/lib/constants";
 import type { EvaluationResultAny, ParsedJob } from "@/types";
+import type { JobType } from "@/lib/eval-prompts";
+import { useOfferTemplates } from "@/hooks/useOfferTemplates";
+import { FeedRefreshButton } from "@/components/FeedRefreshButton";
 
 function makeRunId(): string {
   return typeof crypto !== "undefined" && crypto.randomUUID
@@ -31,6 +35,7 @@ export default function HomePage() {
 
   const { save, saveMany } = useEvaluationHistory();
   const { isSeen, markSeen } = useSeenJobs();
+  const { templates: offerTemplates, getById: getTemplateById } = useOfferTemplates();
 
   const goHistory = useCallback(() => router.push("/history"), [router]);
   useKeyboardShortcuts(useMemo(() => ({ "ctrl+h": goHistory }), [goHistory]));
@@ -46,7 +51,13 @@ export default function HomePage() {
     setToastVisible(true);
   }
 
-  async function handleSubmit(jobText: string) {
+  const [currentJobType, setCurrentJobType] = useState<JobType>("Automatisch");
+  const [currentOfferTemplate, setCurrentOfferTemplate] = useState<string | undefined>();
+
+  async function handleSubmit(jobText: string, jobType: JobType = "Automatisch", offerTemplateId?: string) {
+    setCurrentJobType(jobType);
+    const tpl = offerTemplateId ? getTemplateById(offerTemplateId) : undefined;
+    setCurrentOfferTemplate(tpl?.content);
     setError(null);
     setRuns([]);
     setSkippedCount(0);
@@ -125,62 +136,70 @@ export default function HomePage() {
           duration: run.duration,
           contractorTier: run.contractorTier,
           skillsCount: run.skills?.length ?? 0,
-        });
+        }, { jobType: currentJobType !== "Automatisch" ? currentJobType : undefined, offerTemplate: currentOfferTemplate });
 
         setRuns((prev) =>
           prev.map((r, j) => (j === i ? { ...r, evaluationJobId: jobId } : r)),
         );
 
-        const started = Date.now();
-        while (Date.now() - started < POLL_TIMEOUT_MS) {
-          const p = await pollEvaluation(jobId);
+        const applyResult = (p: PollResp) => {
           if (p.status === "done" && p.result) {
             markSeen([run.jobText]);
             setRuns((prev) =>
               prev.map((r, j) =>
                 j === i
-                  ? {
-                      ...r,
-                      status: "done" as const,
-                      result: p.result,
-                      jobText:
-                        typeof p.jobTextUsed === "string" && p.jobTextUsed.length > 0
-                          ? p.jobTextUsed
-                          : r.jobText,
-                    }
+                  ? { ...r, status: "done" as const, result: p.result, jobText: typeof p.jobTextUsed === "string" && p.jobTextUsed.length > 0 ? p.jobTextUsed : r.jobText }
                   : r,
               ),
             );
-            return;
+            return true;
           }
           if (p.status === "error") {
             setRuns((prev) =>
               prev.map((r, j) =>
                 j === i
-                  ? {
-                      ...r,
-                      status: "error" as const,
-                      error:
-                        typeof p.error === "string" && p.error.length > 0
-                          ? p.error
-                          : "Bewertung fehlgeschlagen.",
-                    }
+                  ? { ...r, status: "error" as const, error: typeof p.error === "string" && p.error.length > 0 ? p.error : "Bewertung fehlgeschlagen." }
                   : r,
               ),
             );
-            return;
+            return true;
           }
+          return false;
+        };
+
+        // Try SSE first, fallback to polling
+        const sseSupported = typeof EventSource !== "undefined";
+        if (sseSupported) {
+          await new Promise<void>((resolve) => {
+            let fallbackTriggered = false;
+            const unsub = streamEvaluation(jobId, (data) => {
+              if (applyResult(data)) resolve();
+            }, () => {
+              if (!fallbackTriggered) {
+                fallbackTriggered = true;
+                resolve();
+              }
+            });
+            setTimeout(() => { unsub(); if (!fallbackTriggered) { fallbackTriggered = true; resolve(); } }, POLL_TIMEOUT_MS);
+          });
+          // Check if already resolved
+          const currentRuns = await new Promise<JobRun[]>((res) => setRuns((prev) => { res(prev); return prev; }));
+          const cur = currentRuns[i];
+          if (cur && (cur.status === "done" || cur.status === "error")) return;
+        }
+
+        // Polling fallback
+        const started = Date.now();
+        while (Date.now() - started < POLL_TIMEOUT_MS) {
+          const p = await pollEvaluation(jobId);
+          if (applyResult(p)) return;
           await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
         }
 
         setRuns((prev) =>
           prev.map((r, j) =>
             j === i
-              ? {
-                  ...r,
-                  status: "error" as const,
-                  error: "Timeout beim Warten auf die Bewertung. Bitte erneut versuchen.",
-                }
+              ? { ...r, status: "error" as const, error: "Timeout beim Warten auf die Bewertung. Bitte erneut versuchen." }
               : r,
           ),
         );
@@ -295,11 +314,20 @@ export default function HomePage() {
     }
   }
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const handleFeedJobs = useCallback((feedJobs: ParsedJob[]) => {
+    const newJobs = feedJobs.filter((j) => !isSeen(j.jobText));
+    if (newJobs.length === 0) return;
+    const jobText = newJobs.map((j) => j.jobText).join("\n---JOBSPLIT---\n");
+    handleSubmit(jobText, currentJobType);
+  }, [isSeen, currentJobType]);
+
   const doneCount = runs.filter((r) => r.status === "done").length;
 
   return (
     <div className="space-y-8">
-      <JobForm onSubmit={handleSubmit} loading={loading} />
+      <JobForm onSubmit={handleSubmit} loading={loading} offerTemplates={offerTemplates.map((t) => ({ id: t.id, name: t.name }))} />
+      <FeedRefreshButton onNewJobs={handleFeedJobs} />
 
       {skippedCount > 0 && (
         <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">

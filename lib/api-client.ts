@@ -35,11 +35,12 @@ export async function parseJobs(rawText: string): Promise<ParsedJob[]> {
 export async function startEvaluation(
   jobText: string,
   meta: Record<string, unknown>,
+  options?: { jobType?: string; offerTemplate?: string },
 ): Promise<string> {
   const data = await apiFetch<StartResp>("/api/evaluate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ async: true, jobText, meta }),
+    body: JSON.stringify({ async: true, jobText, meta, jobType: options?.jobType, offerTemplate: options?.offerTemplate }),
   });
   if (typeof data.jobId !== "string") {
     throw new Error(data.error ?? "Konnte Bewertung nicht starten.");
@@ -76,4 +77,16 @@ export function streamEvaluation(
     onDone();
   };
   return () => es.close();
+}
+
+export async function fetchFeed(url: string): Promise<ParsedJob[]> {
+  const data = await apiFetch<{ jobs?: ParsedJob[]; error?: string }>("/api/feed", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
+  });
+  if (!Array.isArray(data.jobs)) {
+    throw new Error(data.error ?? "Feed-Abruf fehlgeschlagen.");
+  }
+  return data.jobs;
 }

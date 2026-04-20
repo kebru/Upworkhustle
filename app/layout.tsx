@@ -45,6 +45,9 @@ export default function RootLayout({
               <Link href="/stats" className="text-muted transition-colors hover:text-white">
                 Statistiken
               </Link>
+              <Link href="/templates" className="text-muted transition-colors hover:text-white">
+                Vorlagen
+              </Link>
             </nav>
           </div>
         </header>

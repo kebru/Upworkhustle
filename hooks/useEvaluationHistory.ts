@@ -45,13 +45,94 @@ function writeToStorage(entries: SavedEvaluation[]) {
   }
 }
 
+const SYNC_FLAG = "upwork_synced_to_server";
+
+async function syncToServer(entries: SavedEvaluation[]) {
+  try {
+    await fetch("/api/evaluations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ entries }),
+    });
+    localStorage.setItem(SYNC_FLAG, "true");
+  } catch { /* server unavailable — localStorage still works */ }
+}
+
+async function fetchServerEntries(): Promise<SavedEvaluation[] | null> {
+  try {
+    const res = await fetch("/api/evaluations");
+    if (!res.ok) return null;
+    const data = await res.json();
+    return Array.isArray(data.entries) ? data.entries as SavedEvaluation[] : null;
+  } catch {
+    return null;
+  }
+}
+
+async function serverSave(entries: SavedEvaluation[]) {
+  try {
+    await fetch("/api/evaluations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ entries }),
+    });
+  } catch { /* best-effort */ }
+}
+
+async function serverDelete(ids: string[]) {
+  try {
+    await fetch("/api/evaluations", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    });
+  } catch { /* best-effort */ }
+}
+
+async function serverPatch(id: string, patch: Record<string, unknown>) {
+  try {
+    await fetch(`/api/evaluations/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+  } catch { /* best-effort */ }
+}
+
 export function useEvaluationHistory() {
   const [entries, setEntries] = useState<SavedEvaluation[]>([]);
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
-    setEntries(readFromStorage());
+    const local = readFromStorage();
+    setEntries(local);
     setHydrated(true);
+
+    // Initial sync: push localStorage to server if never synced
+    if (!localStorage.getItem(SYNC_FLAG) && local.length > 0) {
+      syncToServer(local);
+    }
+
+    // Background merge: fetch server entries and merge
+    fetchServerEntries().then((serverEntries) => {
+      if (!serverEntries) return;
+      setEntries((prev) => {
+        const idSet = new Set(prev.map((e) => e.id));
+        const merged = [...prev];
+        for (const se of serverEntries) {
+          if (!idSet.has(se.id)) {
+            merged.push(se);
+            idSet.add(se.id);
+          }
+        }
+        if (merged.length !== prev.length) {
+          merged.sort((a, b) => new Date(b.savedAt).getTime() - new Date(a.savedAt).getTime());
+          writeToStorage(merged);
+          return merged;
+        }
+        return prev;
+      });
+    });
   }, []);
 
   const getAll = useCallback((): SavedEvaluation[] => entries, [entries]);
@@ -72,6 +153,7 @@ export function useEvaluationHistory() {
         writeToStorage(next);
         return next;
       });
+      serverSave([newItem]);
     },
     [],
   );
@@ -82,26 +164,28 @@ export function useEvaluationHistory() {
       writeToStorage(next);
       return next;
     });
+    serverDelete([id]);
   }, []);
 
   const saveMany = useCallback(
     (items: { jobSnippet: string; evaluation: EvaluationResultAny }[]) => {
       if (items.length === 0) return;
+      const now = new Date().toISOString();
+      const newItems: SavedEvaluation[] = items.map((entry, i) => ({
+        id:
+          typeof crypto !== "undefined" && crypto.randomUUID
+            ? crypto.randomUUID()
+            : `${Date.now()}-${i}-${Math.random().toString(36).slice(2)}`,
+        savedAt: now,
+        jobSnippet: entry.jobSnippet,
+        evaluation: entry.evaluation,
+      }));
       setEntries((prev) => {
-        const now = new Date().toISOString();
-        const newItems: SavedEvaluation[] = items.map((entry, i) => ({
-          id:
-            typeof crypto !== "undefined" && crypto.randomUUID
-              ? crypto.randomUUID()
-              : `${Date.now()}-${i}-${Math.random().toString(36).slice(2)}`,
-          savedAt: now,
-          jobSnippet: entry.jobSnippet,
-          evaluation: entry.evaluation,
-        }));
         const next = [...newItems, ...prev];
         writeToStorage(next);
         return next;
       });
+      serverSave(newItems);
     },
     [],
   );
@@ -112,15 +196,60 @@ export function useEvaluationHistory() {
       writeToStorage(next);
       return next;
     });
+    serverPatch(id, patch);
   }, []);
 
   const toggleStar = useCallback((id: string) => {
+    let newStarred = false;
     setEntries((prev) => {
-      const next = prev.map((e) => (e.id === id ? { ...e, starred: !e.starred } : e));
+      const next = prev.map((e) => {
+        if (e.id === id) {
+          newStarred = !e.starred;
+          return { ...e, starred: newStarred };
+        }
+        return e;
+      });
+      writeToStorage(next);
+      return next;
+    });
+    serverPatch(id, { starred: newStarred });
+  }, []);
+
+  const removeMany = useCallback((ids: string[]) => {
+    const idSet = new Set(ids);
+    setEntries((prev) => {
+      const next = prev.filter((e) => !idSet.has(e.id));
+      writeToStorage(next);
+      return next;
+    });
+    serverDelete(ids);
+  }, []);
+
+  const updateMany = useCallback((ids: string[], patch: Partial<Pick<SavedEvaluation, "tags" | "starred">>) => {
+    const idSet = new Set(ids);
+    setEntries((prev) => {
+      const next = prev.map((e) => {
+        if (!idSet.has(e.id)) return e;
+        const updated = { ...e, ...patch };
+        if (patch.tags && e.tags) {
+          const merged = new Set([...e.tags, ...patch.tags]);
+          updated.tags = Array.from(merged);
+        }
+        return updated;
+      });
       writeToStorage(next);
       return next;
     });
   }, []);
 
-  return { getAll, save, saveMany, remove, update, toggleStar, hydrated, entries };
+  const toggleStarMany = useCallback((ids: string[]) => {
+    const idSet = new Set(ids);
+    setEntries((prev) => {
+      const next = prev.map((e) => (idSet.has(e.id) ? { ...e, starred: !e.starred } : e));
+      writeToStorage(next);
+      return next;
+    });
+  }, []);
+
+  return { getAll, save, saveMany, remove, removeMany, update, updateMany, toggleStar, toggleStarMany, hydrated, entries };
 }

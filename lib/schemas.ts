@@ -90,6 +90,8 @@ export const evaluateRequestSchema = z.object({
   jobText: z.string().min(1, "Bitte einen Jobtext (jobText) angeben."),
   async: z.boolean().optional().default(false),
   meta: z.record(z.string(), z.unknown()).optional(),
+  jobType: z.enum(["Automatisch", "Web Development", "Data & ML", "Design", "Consulting"]).optional(),
+  offerTemplate: z.string().max(2000).optional(),
 });
 
 // ── Inferred Types ──

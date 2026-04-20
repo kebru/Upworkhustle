@@ -1,15 +1,63 @@
 "use client";
 
+import { useState } from "react";
 import type { EvaluationResult, EvaluationResultAny, EvaluationResultV2 } from "@/types";
 import { formatEffortForDisplay } from "@/lib/formatEffortDisplay";
 import { getOverallScoreLabel } from "@/lib/scoreLabel";
+
+function ScoreRing({ score }: { score: number }) {
+  const pct = Math.min(100, Math.max(0, (score / 10) * 100));
+  const r = 28;
+  const circ = 2 * Math.PI * r;
+  const offset = circ - (pct / 100) * circ;
+  const color = score <= 3 ? "#ef4444" : score <= 6 ? "#f59e0b" : "#10b981";
+  return (
+    <div className="relative inline-flex h-20 w-20 items-center justify-center">
+      <svg className="-rotate-90" width="72" height="72" viewBox="0 0 64 64">
+        <circle cx="32" cy="32" r={r} fill="none" stroke="currentColor" strokeWidth="5" className="text-white/10" />
+        <circle cx="32" cy="32" r={r} fill="none" stroke={color} strokeWidth="5" strokeLinecap="round" strokeDasharray={circ} strokeDashoffset={offset} className="transition-all duration-700" />
+      </svg>
+      <span className="absolute text-lg font-bold text-white">{score}</span>
+    </div>
+  );
+}
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        navigator.clipboard.writeText(text).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 2000);
+        });
+      }}
+      className="ml-2 inline-flex items-center gap-1 rounded-md border border-accent/40 px-2 py-1 text-xs font-medium text-accent transition hover:bg-accent/10"
+    >
+      {copied ? "✓ Kopiert" : "Kopieren"}
+    </button>
+  );
+}
+
+function CollapsibleSection({ title, defaultOpen, children }: { title: string; defaultOpen: boolean; children: React.ReactNode }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div>
+      <button type="button" onClick={() => setOpen(!open)} className="mb-2 flex w-full items-center gap-2 font-medium text-white">
+        <span className={`inline-block text-xs transition-transform ${open ? "rotate-90" : ""}`}>▶</span>
+        {title}
+      </button>
+      {open && children}
+    </div>
+  );
+}
 
 type Props = {
   result: EvaluationResultAny;
 };
 
 export function EvaluationResultCard({ result }: Props) {
-  const pct = Math.min(100, Math.max(0, (result.overall_score / 10) * 100));
   const isV2 = (r: EvaluationResultAny): r is EvaluationResultV2 =>
     typeof (r as { viable_build_20h?: unknown }).viable_build_20h === "boolean" &&
     typeof (r as { viable_consulting?: unknown }).viable_consulting === "boolean" &&
@@ -76,19 +124,16 @@ export function EvaluationResultCard({ result }: Props) {
         <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted">
           Score
         </h2>
-        <div className="mb-2 flex items-baseline justify-between gap-2">
-          <span className="text-2xl font-bold text-accent">
-            {result.overall_score}/10
-          </span>
-          <span className="text-sm text-white/80">
-            {getOverallScoreLabel(result.overall_score)}
-          </span>
-        </div>
-        <div className="mb-4 h-3 w-full overflow-hidden rounded-full bg-white/10">
-          <div
-            className="h-full rounded-full bg-accent transition-[width] duration-500"
-            style={{ width: `${pct}%` }}
-          />
+        <div className="mb-4 flex items-center gap-4">
+          <ScoreRing score={result.overall_score} />
+          <div>
+            <span className="text-2xl font-bold text-accent">
+              {result.overall_score}/10
+            </span>
+            <p className="text-sm text-white/80">
+              {getOverallScoreLabel(result.overall_score)}
+            </p>
+          </div>
         </div>
         <div className="space-y-2 text-sm">
           <div className="flex justify-between gap-4">
@@ -122,54 +167,52 @@ export function EvaluationResultCard({ result }: Props) {
           Detaillierter Report
         </h2>
         <div className="space-y-4 text-sm leading-relaxed">
-          <div>
-            <h3 className="mb-2 font-medium text-white">Risiken</h3>
+          <CollapsibleSection title="Risiken" defaultOpen={result.overall_score < 7}>
             <ul className="list-inside list-disc space-y-1 text-white/85">
               {result.risks.map((r, i) => (
                 <li key={i}>{r}</li>
               ))}
             </ul>
-          </div>
-          <div>
-            <h3 className="mb-2 font-medium text-white">Nächste Schritte</h3>
+          </CollapsibleSection>
+          <CollapsibleSection title="Nächste Schritte" defaultOpen={result.overall_score < 7}>
             <ul className="list-inside list-disc space-y-1 text-white/85">
               {(v2 ? v2.next_steps : v1?.steps ?? []).map((s, i) => (
                 <li key={i}>{s}</li>
               ))}
             </ul>
-          </div>
+          </CollapsibleSection>
           {v2 && Array.isArray(v2.clarifying_questions) && (
-            <div>
-              <h3 className="mb-2 font-medium text-white">Rückfragen</h3>
+            <CollapsibleSection title="Rückfragen" defaultOpen={result.overall_score < 7}>
               <ul className="list-inside list-disc space-y-1 text-white/85">
                 {v2.clarifying_questions.map((q, i) => (
                   <li key={i}>{q}</li>
                 ))}
               </ul>
-            </div>
+            </CollapsibleSection>
           )}
           {v2 && typeof v2.offer_message === "string" && (
             <div>
-              <h3 className="mb-2 font-medium text-white">Angebotstext (Upwork)</h3>
+              <div className="mb-2 flex items-center">
+                <h3 className="font-medium text-white">Angebotstext (Upwork)</h3>
+                <CopyButton text={v2.offer_message} />
+              </div>
               <pre className="whitespace-pre-wrap rounded-lg border border-white/10 bg-black/25 p-3 text-white/90">
                 {v2.offer_message}
               </pre>
             </div>
           )}
           {v2 && Array.isArray(v2.learning_path) && v2.learning_path.length > 0 && (
-            <div>
-              <h3 className="mb-2 font-medium text-white">Lernpfad</h3>
+            <CollapsibleSection title="Lernpfad" defaultOpen={false}>
               <ul className="list-inside list-disc space-y-1 text-white/85">
                 {v2.learning_path.map((l, i) => (
                   <li key={i}>{l}</li>
                 ))}
               </ul>
-            </div>
+            </CollapsibleSection>
           )}
-          <div>
-            <h3 className="mb-2 font-medium text-white">Begründung</h3>
+          <CollapsibleSection title="Begründung" defaultOpen={false}>
             <p className="text-white/85">{result.reasoning}</p>
-          </div>
+          </CollapsibleSection>
         </div>
       </section>
     </div>

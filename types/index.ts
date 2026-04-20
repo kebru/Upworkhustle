@@ -61,6 +61,8 @@ export interface SavedEvaluation {
   savedAt: string;
   jobSnippet: string;
   evaluation: EvaluationResultAny;
+  tags?: string[];
+  starred?: boolean;
 }
 
 export interface ParsedJob {

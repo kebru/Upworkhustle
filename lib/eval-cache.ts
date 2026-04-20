@@ -17,8 +17,16 @@ function simpleHash(str: string): string {
   return hash.toString(36);
 }
 
+function normalizeForCache(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+export function jobTextHash(jobText: string): string {
+  return simpleHash(normalizeForCache(jobText));
+}
+
 export function getCached(jobText: string): CacheEntry | null {
-  const key = simpleHash(jobText);
+  const key = simpleHash(normalizeForCache(jobText));
   const entry = cache.get(key);
   if (!entry) return null;
   if (Date.now() - entry.cachedAt > CACHE_TTL_MS) {
@@ -29,6 +37,6 @@ export function getCached(jobText: string): CacheEntry | null {
 }
 
 export function setCache(jobText: string, result: unknown, jobTextUsed: string, quality: unknown): void {
-  const key = simpleHash(jobText);
+  const key = simpleHash(normalizeForCache(jobText));
   cache.set(key, { result, jobTextUsed, quality, cachedAt: Date.now() });
 }

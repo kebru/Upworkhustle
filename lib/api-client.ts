@@ -53,3 +53,27 @@ export async function pollEvaluation(jobId: string): Promise<PollResp> {
     { method: "GET" },
   );
 }
+
+export function streamEvaluation(
+  jobId: string,
+  onUpdate: (data: PollResp) => void,
+  onDone: () => void,
+): () => void {
+  const url = `/api/evaluate/stream?jobId=${encodeURIComponent(jobId)}`;
+  const es = new EventSource(url);
+  es.onmessage = (e) => {
+    try {
+      const data = JSON.parse(e.data) as PollResp;
+      onUpdate(data);
+      if (data.status === "done" || data.status === "error") {
+        es.close();
+        onDone();
+      }
+    } catch { /* ignore parse errors */ }
+  };
+  es.onerror = () => {
+    es.close();
+    onDone();
+  };
+  return () => es.close();
+}

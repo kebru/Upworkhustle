@@ -106,5 +106,21 @@ export function useEvaluationHistory() {
     [],
   );
 
-  return { getAll, save, saveMany, remove, hydrated, entries };
+  const update = useCallback((id: string, patch: Partial<Pick<SavedEvaluation, "tags" | "starred">>) => {
+    setEntries((prev) => {
+      const next = prev.map((e) => (e.id === id ? { ...e, ...patch } : e));
+      writeToStorage(next);
+      return next;
+    });
+  }, []);
+
+  const toggleStar = useCallback((id: string) => {
+    setEntries((prev) => {
+      const next = prev.map((e) => (e.id === id ? { ...e, starred: !e.starred } : e));
+      writeToStorage(next);
+      return next;
+    });
+  }, []);
+
+  return { getAll, save, saveMany, remove, update, toggleStar, hydrated, entries };
 }

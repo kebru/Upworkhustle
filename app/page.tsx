@@ -1,6 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { JobForm } from "@/components/JobForm";
 import { JobRunCard } from "@/components/JobRunCard";
 import type { JobRun } from "@/components/JobRunCard";
@@ -18,6 +20,7 @@ function makeRunId(): string {
 }
 
 export default function HomePage() {
+  const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [runs, setRuns] = useState<JobRun[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -25,6 +28,9 @@ export default function HomePage() {
   const [toastMessage, setToastMessage] = useState("Gespeichert");
 
   const { save, saveMany } = useEvaluationHistory();
+
+  const goHistory = useCallback(() => router.push("/history"), [router]);
+  useKeyboardShortcuts(useMemo(() => ({ "ctrl+h": goHistory }), [goHistory]));
 
   useEffect(() => {
     if (!toastVisible) return;
@@ -221,6 +227,56 @@ export default function HomePage() {
     );
   }
 
+  async function handleRetry(index: number) {
+    const run = runs[index];
+    if (!run) return;
+    setRuns((prev) =>
+      prev.map((r, j) => (j === index ? { ...r, status: "loading" as const, error: undefined } : r)),
+    );
+    try {
+      const jobId = await startEvaluation(run.jobText, {
+        source: run.source,
+        title: run.title,
+        jobUrl: run.jobUrl,
+      });
+      setRuns((prev) =>
+        prev.map((r, j) => (j === index ? { ...r, evaluationJobId: jobId } : r)),
+      );
+      const started = Date.now();
+      while (Date.now() - started < POLL_TIMEOUT_MS) {
+        const p = await pollEvaluation(jobId);
+        if (p.status === "done" && p.result) {
+          setRuns((prev) =>
+            prev.map((r, j) =>
+              j === index ? { ...r, status: "done" as const, result: p.result, jobText: typeof p.jobTextUsed === "string" && p.jobTextUsed.length > 0 ? p.jobTextUsed : r.jobText } : r,
+            ),
+          );
+          return;
+        }
+        if (p.status === "error") {
+          setRuns((prev) =>
+            prev.map((r, j) =>
+              j === index ? { ...r, status: "error" as const, error: typeof p.error === "string" ? p.error : "Bewertung fehlgeschlagen." } : r,
+            ),
+          );
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+      }
+      setRuns((prev) =>
+        prev.map((r, j) =>
+          j === index ? { ...r, status: "error" as const, error: "Timeout beim Warten auf die Bewertung." } : r,
+        ),
+      );
+    } catch (err) {
+      setRuns((prev) =>
+        prev.map((r, j) =>
+          j === index ? { ...r, status: "error" as const, error: err && typeof err === "object" && "message" in err ? String((err as { message: unknown }).message) : "Bewertung fehlgeschlagen." } : r,
+        ),
+      );
+    }
+  }
+
   const doneCount = runs.filter((r) => r.status === "done").length;
 
   return (
@@ -256,12 +312,29 @@ export default function HomePage() {
             )}
           </div>
 
+          {/* Batch progress */}
+          {runs.length > 1 && loading && (
+            <div className="rounded-lg border border-white/10 bg-surface/40 p-3">
+              <div className="mb-1.5 flex items-center justify-between text-xs text-muted">
+                <span>{doneCount + runs.filter((r) => r.status === "error").length} von {runs.length} abgeschlossen</span>
+                <span>{doneCount} erfolgreich{runs.filter((r) => r.status === "error").length > 0 ? `, ${runs.filter((r) => r.status === "error").length} fehlgeschlagen` : ""}</span>
+              </div>
+              <div className="h-2 w-full overflow-hidden rounded-full bg-white/10">
+                <div
+                  className="h-full rounded-full bg-accent transition-[width] duration-300"
+                  style={{ width: `${((doneCount + runs.filter((r) => r.status === "error").length) / runs.length) * 100}%` }}
+                />
+              </div>
+            </div>
+          )}
+
           {runs.map((run, index) => (
             <JobRunCard
               key={run.id}
               run={run}
               index={index}
               onSave={() => handleSaveOne(run)}
+              onRetry={() => handleRetry(index)}
             />
           ))}
         </div>

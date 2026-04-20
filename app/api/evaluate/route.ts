@@ -8,7 +8,7 @@ import { openRouterChat } from "@/lib/llm-client";
 import type { ChatMessage } from "@/lib/llm-client";
 import { SYSTEM_PROMPT, REPAIR_SYSTEM_PROMPT } from "@/lib/eval-prompts";
 import { parseJsonStrict, validateResult, isLikelyGerman } from "@/lib/eval-validator";
-import { getCached, setCache } from "@/lib/eval-cache";
+import { getCached, setCache, jobTextHash } from "@/lib/eval-cache";
 import { evaluateRequestSchema } from "@/lib/schemas";
 import {
   PRIMARY_MODEL_DEFAULT,
@@ -368,9 +368,22 @@ export async function POST(request: Request) {
 
   try {
     if (asyncMode) {
+      // Dedup: reuse in-flight job with same text hash
+      const textHash = jobTextHash(jobText);
+      let existingJobId: string | null = null;
+      evalJobs.forEach((rec, id) => {
+        if (!existingJobId && (rec.status === "queued" || rec.status === "running")) {
+          const recHash = rec.jobTextUsed ? jobTextHash(rec.jobTextUsed) : null;
+          if (recHash === textHash) existingJobId = id;
+        }
+      });
+      if (existingJobId) {
+        return NextResponse.json({ jobId: existingJobId }, { status: 202 });
+      }
+
       const jobId = makeEvalJobId();
       const now = Date.now();
-      evalJobs.set(jobId, { id: jobId, status: "queued", createdAt: now, updatedAt: now });
+      evalJobs.set(jobId, { id: jobId, status: "queued", createdAt: now, updatedAt: now, jobTextUsed: jobText });
 
       void (async () => {
         const rec = evalJobs.get(jobId);

@@ -32,9 +32,10 @@ type Props = {
   run: JobRun;
   index: number;
   onSave: () => void;
+  onRetry?: () => void;
 };
 
-export function JobRunCard({ run, index, onSave }: Props) {
+export function JobRunCard({ run, index, onSave, onRetry }: Props) {
   return (
     <section className="rounded-xl border border-white/10 bg-surface/40 p-4 sm:p-5">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-2 border-b border-white/10 pb-3">
@@ -93,9 +94,18 @@ export function JobRunCard({ run, index, onSave }: Props) {
       {run.status === "error" && (
         <div
           role="alert"
-          className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200"
+          className="flex items-center justify-between gap-3 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200"
         >
-          {run.error ?? "Unbekannter Fehler."}
+          <span>{run.error ?? "Unbekannter Fehler."}</span>
+          {onRetry && (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="shrink-0 rounded-md border border-red-400/50 px-3 py-1 text-xs font-semibold text-red-200 transition hover:bg-red-500/20"
+            >
+              Erneut versuchen
+            </button>
+          )}
         </div>
       )}
 

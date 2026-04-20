@@ -77,6 +77,12 @@ export function JobForm({ onSubmit, loading }: Props) {
             value={jobText}
             onChange={(e) => setJobText(e.target.value)}
             onPaste={handleJobPaste}
+            onKeyDown={(e) => {
+              if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && !loading && jobText.trim()) {
+                e.preventDefault();
+                onSubmit(jobText);
+              }
+            }}
             rows={18}
             className="w-full resize-y rounded-lg border border-white/15 bg-surface p-4 text-sm text-white placeholder:text-white/35 focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
             placeholder={`Job 1 Text hier…\n\n---\n\nJob 2 Text hier…\n\n---\n\nJob 3…`}
@@ -90,6 +96,7 @@ export function JobForm({ onSubmit, loading }: Props) {
         >
           {loading ? "Bewerte…" : "Jetzt bewerten"}
         </button>
+        <span className="ml-3 hidden text-xs text-muted sm:inline">Ctrl+Enter</span>
       </form>
     </>
   );

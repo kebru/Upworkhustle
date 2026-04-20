@@ -62,3 +62,21 @@ export interface SavedEvaluation {
   jobSnippet: string;
   evaluation: EvaluationResultAny;
 }
+
+export interface ParsedJob {
+  source: "upwork_feed" | "text";
+  jobText: string;
+  title?: string;
+  postedOn?: string;
+  jobType?: string;
+  budget?: string;
+  duration?: string;
+  contractorTier?: string;
+  skills?: string[];
+  feedHasMoreToggle?: boolean;
+  likelyTruncated?: boolean;
+  descriptionCharLength?: number;
+  jobTextCharLength?: number;
+  wasTrimmed?: boolean;
+  jobUrl?: string;
+}

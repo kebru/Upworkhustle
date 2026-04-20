@@ -1,15 +1,31 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import type { EvaluationResult, SavedEvaluation } from "@/types";
+import type { EvaluationResultAny, SavedEvaluation } from "@/types";
 
-export const STORAGE_KEY = "upwork_evaluations";
+const STORAGE_KEY_V2 = "upwork_evaluations_v2";
+const LEGACY_STORAGE_KEY = "upwork_evaluations";
+
+function migrateFromV1(): SavedEvaluation[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(LEGACY_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    localStorage.setItem(STORAGE_KEY_V2, raw);
+    localStorage.removeItem(LEGACY_STORAGE_KEY);
+    return parsed as SavedEvaluation[];
+  } catch {
+    return [];
+  }
+}
 
 function readFromStorage(): SavedEvaluation[] {
   if (typeof window === "undefined") return [];
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
+    const raw = localStorage.getItem(STORAGE_KEY_V2);
+    if (!raw) return migrateFromV1();
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [];
     return parsed as SavedEvaluation[];
@@ -20,7 +36,7 @@ function readFromStorage(): SavedEvaluation[] {
 
 function writeToStorage(entries: SavedEvaluation[]) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
+    localStorage.setItem(STORAGE_KEY_V2, JSON.stringify(entries));
   } catch (e) {
     console.error(
       "LocalStorage konnte nicht geschrieben werden (Speicher voll oder privat?):",
@@ -41,7 +57,7 @@ export function useEvaluationHistory() {
   const getAll = useCallback((): SavedEvaluation[] => entries, [entries]);
 
   const save = useCallback(
-    (entry: { jobSnippet: string; evaluation: EvaluationResult }) => {
+    (entry: { jobSnippet: string; evaluation: EvaluationResultAny }) => {
       const newItem: SavedEvaluation = {
         id:
           typeof crypto !== "undefined" && crypto.randomUUID
@@ -69,7 +85,7 @@ export function useEvaluationHistory() {
   }, []);
 
   const saveMany = useCallback(
-    (items: { jobSnippet: string; evaluation: EvaluationResult }[]) => {
+    (items: { jobSnippet: string; evaluation: EvaluationResultAny }[]) => {
       if (items.length === 0) return;
       setEntries((prev) => {
         const now = new Date().toISOString();

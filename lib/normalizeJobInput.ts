@@ -3,7 +3,9 @@
  * für die Bewertungs-API (weniger Tokens, stabiler).
  */
 
-const MAX_CHARS = 48_000;
+import { MAX_JOB_CHARS } from "@/lib/constants";
+
+const MAX_CHARS = MAX_JOB_CHARS;
 
 function decodeBasicEntities(t: string): string {
   return t

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { EvaluationResultCard } from "@/components/EvaluationResultCard";
 import { useEvaluationHistory } from "@/hooks/useEvaluationHistory";
+import type { SavedEvaluation } from "@/types";
 
 function formatDate(iso: string): string {
   try {
@@ -19,6 +20,30 @@ function titlePreview(snippet: string): string {
   const t = snippet.trim();
   if (t.length <= 60) return t || "(Kein Text)";
   return `${t.slice(0, 60)}…`;
+}
+
+function downloadFile(content: string, filename: string, mimeType: string) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function exportAsJson(entries: SavedEvaluation[]) {
+  const json = JSON.stringify(entries, null, 2);
+  downloadFile(json, `upwork-evaluations-${new Date().toISOString().slice(0, 10)}.json`, "application/json");
+}
+
+function exportAsCsv(entries: SavedEvaluation[]) {
+  const header = "ID,Gespeichert,Viable,Score,Aufwand,Jobtext (Auszug)\n";
+  const rows = entries.map((e) => {
+    const snippet = e.jobSnippet.replace(/"/g, '""').slice(0, 200);
+    return `"${e.id}","${e.savedAt}","${e.evaluation.viable ? "Ja" : "Nein"}","${e.evaluation.overall_score}","${e.evaluation.effort_hours}","${snippet}"`;
+  });
+  downloadFile(header + rows.join("\n"), `upwork-evaluations-${new Date().toISOString().slice(0, 10)}.csv`, "text/csv;charset=utf-8");
 }
 
 export default function HistoryPage() {
@@ -47,15 +72,33 @@ export default function HistoryPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight text-white">
-          Gespeicherte Bewertungen
-        </h1>
-        <p className="mt-2 text-sm text-muted">
-          {entries.length}{" "}
-          {entries.length === 1 ? "Eintrag" : "Einträge"} lokal in diesem
-          Browser.
-        </p>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight text-white">
+            Gespeicherte Bewertungen
+          </h1>
+          <p className="mt-2 text-sm text-muted">
+            {entries.length}{" "}
+            {entries.length === 1 ? "Eintrag" : "Einträge"} lokal in diesem
+            Browser.
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => exportAsJson(entries)}
+            className="rounded-lg border border-accent/50 bg-transparent px-3 py-1.5 text-xs font-semibold text-accent transition hover:bg-accent/10 sm:text-sm"
+          >
+            JSON Export
+          </button>
+          <button
+            type="button"
+            onClick={() => exportAsCsv(entries)}
+            className="rounded-lg border border-accent/50 bg-transparent px-3 py-1.5 text-xs font-semibold text-accent transition hover:bg-accent/10 sm:text-sm"
+          >
+            CSV Export
+          </button>
+        </div>
       </div>
 
       <ul className="space-y-3">

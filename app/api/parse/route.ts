@@ -3,28 +3,10 @@ import { extractUpworkFeedTiles } from "@/lib/extractUpworkFeedTiles";
 import { looksLikeHtml, normalizeJobText } from "@/lib/normalizeJobInput";
 import { normalizeUpworkDescription } from "@/lib/normalizeUpworkDescription";
 import { splitJobPostings } from "@/lib/splitJobs";
-
-type ParsedJob = {
-  source: "upwork_feed" | "text";
-  title?: string;
-  postedOn?: string;
-  jobType?: string;
-  budget?: string;
-  duration?: string;
-  contractorTier?: string;
-  skills?: string[];
-  feedHasMoreToggle?: boolean;
-  likelyTruncated?: boolean;
-  descriptionCharLength?: number;
-  jobTextCharLength?: number;
-  wasTrimmed?: boolean;
-  jobUrl?: string;
-  /**
-   * Der Text, der für Bewertung gedacht ist (bereinigt/kompakt),
-   * nicht zwingend identisch mit dem Roh-Paste.
-   */
-  jobText: string;
-};
+import { PER_JOB_MAX_CHARS } from "@/lib/constants";
+import { extractIp, isRateLimited } from "@/lib/rateLimit";
+import { parseRequestSchema } from "@/lib/schemas";
+import type { ParsedJob } from "@/types";
 
 function buildModelTextFromTile(tile: {
   title: string;
@@ -56,8 +38,6 @@ function buildModelTextFromTile(tile: {
   return parts.join("\n");
 }
 
-const PER_JOB_MAX_CHARS = 20_000;
-
 function applyPerJobLimit(s: string): { text: string; wasTrimmed: boolean } {
   const t = s.trim();
   if (t.length <= PER_JOB_MAX_CHARS) return { text: t, wasTrimmed: false };
@@ -68,6 +48,14 @@ function applyPerJobLimit(s: string): { text: string; wasTrimmed: boolean } {
 }
 
 export async function POST(request: Request) {
+  const ip = extractIp(request);
+  if (isRateLimited(ip)) {
+    return NextResponse.json(
+      { error: "Zu viele Anfragen. Bitte kurz warten." },
+      { status: 429 },
+    );
+  }
+
   let body: unknown;
   try {
     body = await request.json();
@@ -75,19 +63,16 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Ungültiger JSON-Body." }, { status: 400 });
   }
 
-  const raw =
-    body &&
-    typeof body === "object" &&
-    "rawText" in body &&
-    typeof (body as { rawText: unknown }).rawText === "string"
-      ? (body as { rawText: string }).rawText.trim()
-      : "";
-
-  if (!raw) {
+  const parsed = parseRequestSchema.safeParse(body);
+  if (!parsed.success) {
     return NextResponse.json(
-      { error: "Bitte rawText angeben." },
+      { error: parsed.error.issues[0]?.message ?? "Ungültige Anfrage." },
       { status: 400 },
     );
+  }
+  const raw = parsed.data.rawText.trim();
+  if (!raw) {
+    return NextResponse.json({ error: "Bitte rawText angeben." }, { status: 400 });
   }
 
   // 1) Upwork-Feed-HTML: strukturiert extrahieren

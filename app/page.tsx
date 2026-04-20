@@ -7,6 +7,7 @@ import { JobForm } from "@/components/JobForm";
 import { JobRunCard } from "@/components/JobRunCard";
 import type { JobRun } from "@/components/JobRunCard";
 import { useEvaluationHistory } from "@/hooks/useEvaluationHistory";
+import { useSeenJobs } from "@/hooks/useSeenJobs";
 import { normalizeJobText } from "@/lib/normalizeJobInput";
 import { splitJobPostings } from "@/lib/splitJobs";
 import { parseJobs, startEvaluation, pollEvaluation } from "@/lib/api-client";
@@ -26,8 +27,10 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null);
   const [toastVisible, setToastVisible] = useState(false);
   const [toastMessage, setToastMessage] = useState("Gespeichert");
+  const [skippedCount, setSkippedCount] = useState(0);
 
   const { save, saveMany } = useEvaluationHistory();
+  const { isSeen, markSeen } = useSeenJobs();
 
   const goHistory = useCallback(() => router.push("/history"), [router]);
   useKeyboardShortcuts(useMemo(() => ({ "ctrl+h": goHistory }), [goHistory]));
@@ -46,6 +49,7 @@ export default function HomePage() {
   async function handleSubmit(jobText: string) {
     setError(null);
     setRuns([]);
+    setSkippedCount(0);
 
     let parsedJobs: ParsedJob[];
     try {
@@ -61,6 +65,18 @@ export default function HomePage() {
     if (parsedJobs.length === 0) {
       setError(
         "Bitte mindestens einen Job-Text einfügen. Wenn du aus dem Feed kopierst: für Volltext Job öffnen (Detailseite) und dort Titel + Beschreibung kopieren.",
+      );
+      return;
+    }
+
+    const totalBefore = parsedJobs.length;
+    parsedJobs = parsedJobs.filter((j) => !isSeen(j.jobText));
+    const skipped = totalBefore - parsedJobs.length;
+    setSkippedCount(skipped);
+
+    if (parsedJobs.length === 0) {
+      setError(
+        `Alle ${totalBefore} Jobs wurden bereits bewertet. Neue Jobs einfügen um fortzufahren.`,
       );
       return;
     }
@@ -119,6 +135,7 @@ export default function HomePage() {
         while (Date.now() - started < POLL_TIMEOUT_MS) {
           const p = await pollEvaluation(jobId);
           if (p.status === "done" && p.result) {
+            markSeen([run.jobText]);
             setRuns((prev) =>
               prev.map((r, j) =>
                 j === i
@@ -246,6 +263,7 @@ export default function HomePage() {
       while (Date.now() - started < POLL_TIMEOUT_MS) {
         const p = await pollEvaluation(jobId);
         if (p.status === "done" && p.result) {
+          markSeen([run.jobText]);
           setRuns((prev) =>
             prev.map((r, j) =>
               j === index ? { ...r, status: "done" as const, result: p.result, jobText: typeof p.jobTextUsed === "string" && p.jobTextUsed.length > 0 ? p.jobTextUsed : r.jobText } : r,
@@ -282,6 +300,12 @@ export default function HomePage() {
   return (
     <div className="space-y-8">
       <JobForm onSubmit={handleSubmit} loading={loading} />
+
+      {skippedCount > 0 && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+          {skippedCount} bereits bewertete{skippedCount === 1 ? "r Job" : " Jobs"} übersprungen.
+        </div>
+      )}
 
       {error && (
         <div

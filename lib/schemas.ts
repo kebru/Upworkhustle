@@ -57,6 +57,7 @@ export const evaluationCriteriaV2Schema = z.object({
   scope_clarity: score1to10,
   low_integration_ops_complexity: score1to10,
   solo_delivery_fit: score1to10,
+  ai_coding_fit: score1to10.optional().default(5),
 });
 
 export const evaluationResultV2Schema = z.object({

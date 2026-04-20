@@ -169,7 +169,7 @@ async function main() {
         `flags: feedHasMoreToggle=${String(j.feedHasMoreToggle)} likelyTruncated=${String(j.likelyTruncated)} wasTrimmed=${String(j.wasTrimmed)}\n` +
         `lens: descChars=${j.descriptionCharLength ?? "?"} jobTextChars=${j.jobTextCharLength ?? "?"}\n` +
         `result: viable=${String(data.result?.viable)} overall=${String(data.result?.overall_score)} effort=${String(data.result?.effort_hours)}\n` +
-        `criteria: scope=${String(data.result?.criteria?.scope_clarity)} ops=${String(data.result?.criteria?.low_integration_ops_complexity)} solo=${String(data.result?.criteria?.solo_delivery_fit)}\n` +
+        `criteria: scope=${String(data.result?.criteria?.scope_clarity)} ops=${String(data.result?.criteria?.low_integration_ops_complexity)} solo=${String(data.result?.criteria?.solo_delivery_fit)} ai=${String(data.result?.criteria?.ai_coding_fit)}\n` +
         `risks[0]: ${Array.isArray(data.result?.risks) ? String(data.result?.risks[0] ?? "") : ""}\n` +
         `next_steps[0]: ${Array.isArray(data.result?.next_steps) ? String(data.result?.next_steps[0] ?? "") : ""}`,
     );

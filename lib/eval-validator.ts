@@ -40,7 +40,7 @@ export function isLikelyGerman(text: string): boolean {
 }
 
 export function checkSemanticQuality(
-  result: { reasoning: string; risks: string[]; overall_score: number; criteria: { scope_clarity: number; low_integration_ops_complexity: number; solo_delivery_fit: number } },
+  result: { reasoning: string; risks: string[]; overall_score: number; criteria: { scope_clarity: number; low_integration_ops_complexity: number; solo_delivery_fit: number; ai_coding_fit: number } },
   jobText: string,
 ): { warnings: string[] } {
   const warnings: string[] = [];
@@ -62,8 +62,8 @@ export function checkSemanticQuality(
     warnings.push("Risiken sind generisch nummeriert statt inhaltlich.");
   }
 
-  const { scope_clarity, low_integration_ops_complexity, solo_delivery_fit } = result.criteria;
-  const avgCriteria = (scope_clarity + low_integration_ops_complexity + solo_delivery_fit) / 3;
+  const { scope_clarity, low_integration_ops_complexity, solo_delivery_fit, ai_coding_fit } = result.criteria;
+  const avgCriteria = (scope_clarity + low_integration_ops_complexity + solo_delivery_fit + ai_coding_fit) / 4;
   if (avgCriteria >= 8 && result.overall_score < 5) {
     warnings.push("Inkonsistenz: Alle Kriterien hoch, aber overall_score niedrig.");
   }

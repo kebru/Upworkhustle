@@ -53,6 +53,7 @@ describe("parseEvaluationResultV2", () => {
       scope_clarity: 8,
       low_integration_ops_complexity: 7,
       solo_delivery_fit: 9,
+      ai_coding_fit: 8,
     },
     risks: ["Risk 1", "Risk 2", "Risk 3"],
     next_steps: ["Step 1"],
@@ -82,5 +83,12 @@ describe("parseEvaluationResultV2", () => {
     const result = parseEvaluationResultV2({ ...validV2, viable_build_20h: false, viable_consulting: true });
     expect(result).not.toBeNull();
     expect(result!.viable).toBe(true);
+  });
+
+  it("defaults ai_coding_fit to 5 when missing (backward compat)", () => {
+    const { ai_coding_fit: _, ...criteriaWithout } = validV2.criteria;
+    const result = parseEvaluationResultV2({ ...validV2, criteria: criteriaWithout });
+    expect(result).not.toBeNull();
+    expect(result!.criteria.ai_coding_fit).toBe(5);
   });
 });

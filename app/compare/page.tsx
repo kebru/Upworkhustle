@@ -85,6 +85,7 @@ function CompareContent() {
 
   const radarAxes = [
     { label: "Score", values: items.map((i) => i.evaluation.overall_score) },
+    { label: "AI-Coding", values: items.map((i) => isV2(i.evaluation) ? i.evaluation.criteria.ai_coding_fit : 5) },
     { label: "Scope", values: items.map((i) => isV2(i.evaluation) ? i.evaluation.criteria.scope_clarity : (i.evaluation as { criteria: { clear_requirements: number } }).criteria.clear_requirements) },
     { label: "Complexity", values: items.map((i) => isV2(i.evaluation) ? i.evaluation.criteria.low_integration_ops_complexity : (i.evaluation as { criteria: { no_complex_backend: number } }).criteria.no_complex_backend) },
     { label: "Solo Fit", values: items.map((i) => isV2(i.evaluation) ? i.evaluation.criteria.solo_delivery_fit : 5) },

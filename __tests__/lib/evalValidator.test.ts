@@ -122,7 +122,7 @@ describe("checkSemanticQuality", () => {
     reasoning: "Dieser Job erfordert eine Landing Page mit Next.js und Tailwind CSS. Das passt zum Profil.",
     risks: ["Figma-Designs könnten komplex sein", "Stripe braucht Testumgebung", "Responsive Edge-Cases"],
     overall_score: 8,
-    criteria: { scope_clarity: 8, low_integration_ops_complexity: 7, solo_delivery_fit: 9 },
+    criteria: { scope_clarity: 8, low_integration_ops_complexity: 7, solo_delivery_fit: 9, ai_coding_fit: 8 },
   };
 
   it("returns no warnings for good result", () => {
@@ -148,7 +148,7 @@ describe("checkSemanticQuality", () => {
 
   it("warns on score inconsistency (high criteria, low overall)", () => {
     const { warnings } = checkSemanticQuality(
-      { ...baseResult, overall_score: 3, criteria: { scope_clarity: 9, low_integration_ops_complexity: 9, solo_delivery_fit: 9 } },
+      { ...baseResult, overall_score: 3, criteria: { scope_clarity: 9, low_integration_ops_complexity: 9, solo_delivery_fit: 9, ai_coding_fit: 9 } },
       "Build a landing page",
     );
     expect(warnings.some((w) => w.includes("Inkonsistenz"))).toBe(true);
@@ -173,7 +173,7 @@ describe("validateResultDetailed", () => {
       timeline_days: "3-5",
       price_range: "500-800",
       overall_score: 7,
-      criteria: { scope_clarity: 8, low_integration_ops_complexity: 7, solo_delivery_fit: 8 },
+      criteria: { scope_clarity: 8, low_integration_ops_complexity: 7, solo_delivery_fit: 8, ai_coding_fit: 8 },
       risks: ["R1"],
       next_steps: ["S1"],
       clarifying_questions: [],

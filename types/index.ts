@@ -17,6 +17,7 @@ export interface EvaluationCriteriaV2 {
   scope_clarity: number;
   low_integration_ops_complexity: number;
   solo_delivery_fit: number;
+  ai_coding_fit: number;
 }
 
 export interface EvaluationResultV2 {

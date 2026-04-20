@@ -136,6 +136,14 @@ export function EvaluationResultCard({ result }: Props) {
           </div>
         </div>
         <div className="space-y-2 text-sm">
+          {v2 && (
+            <div className="flex justify-between gap-4">
+              <span className="text-muted">AI-Coding Fit</span>
+              <span className="font-medium tabular-nums text-white">
+                {v2.criteria.ai_coding_fit}/10
+              </span>
+            </div>
+          )}
           <div className="flex justify-between gap-4">
             <span className="text-muted">Klare Anforderungen</span>
             <span className="font-medium tabular-nums text-white">

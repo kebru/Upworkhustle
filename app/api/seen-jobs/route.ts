@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { dbMarkSeen, dbGetAllSeenHashes, dbGetAllSeenUpworkJobIds } from "@/lib/db";
+import {
+  dbMarkSeen,
+  dbGetAllSeenHashes,
+  dbGetAllSeenUpworkJobIds,
+  dbGetAllEvaluationUpworkJobIds,
+} from "@/lib/db";
 
 const postSchema = z.object({
   entries: z.array(
@@ -13,7 +18,9 @@ const postSchema = z.object({
 
 export async function GET() {
   const hashes = dbGetAllSeenHashes();
-  const upworkJobIds = dbGetAllSeenUpworkJobIds();
+  const seenIds = dbGetAllSeenUpworkJobIds();
+  const evalIds = dbGetAllEvaluationUpworkJobIds();
+  const upworkJobIds = Array.from(new Set([...seenIds, ...evalIds]));
   return NextResponse.json({ hashes, upworkJobIds });
 }
 

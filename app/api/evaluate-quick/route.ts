@@ -2,12 +2,16 @@ import { NextResponse } from "next/server";
 import { extractFromUpworkHtml } from "@/lib/extractUpworkHtml";
 import { looksLikeHtml, normalizeJobText } from "@/lib/normalizeJobInput";
 import { appendEvaluationLog } from "@/lib/evaluationLogger";
-import { parseEvaluationResultV2 } from "@/lib/parseEvaluationResult";
 import { extractIp, isRateLimited } from "@/lib/rateLimit";
 import { openRouterChat } from "@/lib/llm-client";
 import type { ChatMessage } from "@/lib/llm-client";
-import { getSystemPrompt, REPAIR_SYSTEM_PROMPT } from "@/lib/eval-prompts";
-import { parseJsonStrict, validateResult, validateResultDetailed, isLikelyGerman, checkSemanticQuality } from "@/lib/eval-validator";
+import { getQuickCashSystemPrompt } from "@/lib/eval-prompts";
+import {
+  parseJsonStrict,
+  validateQuickCashResult,
+  validateQuickCashResultDetailed,
+  isLikelyGerman,
+} from "@/lib/eval-validator";
 import { getCached, setCache, jobTextHash } from "@/lib/eval-cache";
 import { evaluateRequestSchema } from "@/lib/schemas";
 import { dbMarkSeen } from "@/lib/db";
@@ -40,15 +44,15 @@ type EvalJobRecord = {
   createdAt: number;
   updatedAt: number;
   error?: string;
-  result?: ReturnType<typeof parseEvaluationResultV2>;
+  result?: ReturnType<typeof validateQuickCashResult>;
   jobTextUsed?: string;
   quality?: unknown;
 };
 
 const evalJobs: Map<string, EvalJobRecord> = (() => {
-  const g = globalThis as unknown as { __upworkEvalJobs?: Map<string, EvalJobRecord> };
-  if (!g.__upworkEvalJobs) g.__upworkEvalJobs = new Map<string, EvalJobRecord>();
-  return g.__upworkEvalJobs;
+  const g = globalThis as unknown as { __upworkQuickEvalJobs?: Map<string, EvalJobRecord> };
+  if (!g.__upworkQuickEvalJobs) g.__upworkQuickEvalJobs = new Map<string, EvalJobRecord>();
+  return g.__upworkQuickEvalJobs;
 })();
 
 const JOB_TTL_MS = 10 * 60 * 1000;
@@ -63,9 +67,9 @@ function gcEvalJobs() {
   });
 }
 
-const gcGlobal = globalThis as unknown as { __upworkGcTimer?: ReturnType<typeof setInterval> };
-if (!gcGlobal.__upworkGcTimer) {
-  gcGlobal.__upworkGcTimer = setInterval(gcEvalJobs, GC_INTERVAL_MS);
+const gcGlobal = globalThis as unknown as { __upworkQuickGcTimer?: ReturnType<typeof setInterval> };
+if (!gcGlobal.__upworkQuickGcTimer) {
+  gcGlobal.__upworkQuickGcTimer = setInterval(gcEvalJobs, GC_INTERVAL_MS);
 }
 
 function envInt(name: string, fallback: number): number {
@@ -84,12 +88,10 @@ async function evaluateWithPolicy(params: {
   hedgeEnabled: boolean;
   deadlineMs: number;
   requestTimeoutMs: number;
-  jobType?: string;
-  offerTemplate?: string;
 }): Promise<
   | {
       ok: true;
-      result: NonNullable<ReturnType<typeof parseEvaluationResultV2>>;
+      result: NonNullable<ReturnType<typeof validateQuickCashResult>>;
       jobTextUsed: string;
       quality: {
         winnerModel: string;
@@ -110,7 +112,8 @@ async function evaluateWithPolicy(params: {
 
   const deadlineCtrl = new AbortController();
   const deadlineTimer = setTimeout(() => deadlineCtrl.abort(), params.deadlineMs);
-  const systemPrompt = getSystemPrompt(params.jobType, params.offerTemplate);
+
+  const systemPrompt = getQuickCashSystemPrompt();
   const baseMessages: ChatMessage[] = [
     { role: "system", content: systemPrompt, cache_control: { type: "ephemeral" } },
     { role: "user", content: params.jobText },
@@ -139,11 +142,12 @@ async function evaluateWithPolicy(params: {
   }) => {
     const first = parseJsonStrict(p.content);
     quality.wasJsonValidFirstTry = quality.wasJsonValidFirstTry || first.ok;
-
     const parsed = first.ok ? first.parsed : null;
     const cleaned = first.cleaned;
 
-    const detailed = parsed ? validateResultDetailed(parsed) : { ok: false as const, errors: ["Kein gültiges JSON."] };
+    const detailed = parsed
+      ? validateQuickCashResultDetailed(parsed)
+      : { ok: false as const, errors: ["Kein gültiges JSON."] };
     if (detailed.ok) return { ok: true as const, result: detailed.result };
 
     if (!params.repairEnabled || timeLeftMs() < REPAIR_MIN_TIME_LEFT_MS) return { ok: false as const };
@@ -153,11 +157,12 @@ async function evaluateWithPolicy(params: {
     const repairUser =
       `JOBTEXT:\n${params.jobText}\n\nFEHLER:\n${errorList}\n\nFEHLERHAFTE_ANTWORT (bitte reparieren):\n${cleaned}`;
 
+    // Quick-Cash Repair: reuse model with stricter instruction
     const repaired = await openRouterChat({
       apiKey: params.apiKey,
       model: p.model,
       messages: [
-        { role: "system", content: REPAIR_SYSTEM_PROMPT },
+        { role: "system", content: "Repariere die Antwort zu gültigem JSON im Quick-Cash Schema. Antworte NUR mit JSON." },
         { role: "user", content: repairUser },
       ],
       timeoutMs: Math.min(params.requestTimeoutMs, Math.max(REPAIR_MIN_TIME_LEFT_MS, timeLeftMs() - 200)),
@@ -167,7 +172,7 @@ async function evaluateWithPolicy(params: {
     if (!repaired.ok || !repaired.content) return { ok: false as const };
     const p2 = parseJsonStrict(repaired.content);
     if (!p2.ok) return { ok: false as const };
-    const r2 = validateResult(p2.parsed);
+    const r2 = validateQuickCashResult(p2.parsed);
     if (r2) return { ok: true as const, result: r2 };
     return { ok: false as const };
   };
@@ -192,9 +197,7 @@ async function evaluateWithPolicy(params: {
 
   const active: Array<ReturnType<typeof callModel>> = [];
   active.push(callModel({ model: params.primaryModel, controller: primaryCtrl }));
-  if (params.hedgeEnabled) {
-    active.push(callModel({ model: params.fallbackModel, controller: fallbackCtrl }));
-  }
+  if (params.hedgeEnabled) active.push(callModel({ model: params.fallbackModel, controller: fallbackCtrl }));
   let fallbackLaunched = params.hedgeEnabled;
 
   const wrapRace = <T,>(p: Promise<T>, idx: number) =>
@@ -204,7 +207,7 @@ async function evaluateWithPolicy(params: {
     );
 
   let winner:
-    | { model: string; result: NonNullable<ReturnType<typeof parseEvaluationResultV2>>; latencyMs: number }
+    | { model: string; result: NonNullable<ReturnType<typeof validateQuickCashResult>>; latencyMs: number }
     | null = null;
 
   while (active.length > 0 && timeLeftMs() > 0 && !deadlineCtrl.signal.aborted) {
@@ -213,13 +216,8 @@ async function evaluateWithPolicy(params: {
     if (!raced.ok) continue;
     const out = raced.v as Awaited<ReturnType<typeof callModel>>;
     if (out.ok && out.content) {
-      const modelSignal =
-        out.model === params.primaryModel ? primaryCtrl.signal : fallbackCtrl.signal;
-      const v = await validateAndMaybeRepair({
-        model: out.model,
-        content: out.content,
-        modelSignal,
-      });
+      const modelSignal = out.model === params.primaryModel ? primaryCtrl.signal : fallbackCtrl.signal;
+      const v = await validateAndMaybeRepair({ model: out.model, content: out.content, modelSignal });
       if (v.ok) {
         winner = { model: out.model, result: v.result, latencyMs: out.latencyMs };
         break;
@@ -236,8 +234,7 @@ async function evaluateWithPolicy(params: {
     quality.deadlineHit = true;
     return {
       ok: false,
-      error:
-        "Zeitlimit erreicht. Die KI-API war zu langsam oder hat keine gültige Antwort geliefert.",
+      error: "Zeitlimit erreicht. Die KI-API war zu langsam oder hat keine gültige Antwort geliefert.",
       quality: { deadlineHit: true, emptyContentSeen: quality.emptyContentSeen },
     };
   }
@@ -250,30 +247,20 @@ async function evaluateWithPolicy(params: {
 
   quality.winnerModel = winner.model;
   quality.winnerLatencyMs = winner.latencyMs;
-  quality.isGerman = isLikelyGerman(
-    [winner.result.reasoning, ...winner.result.steps, ...winner.result.risks].join("\n"),
-  );
+  quality.isGerman = isLikelyGerman([winner.result.reasoning, winner.result.proposal_de].join("\n"));
 
-  const semantic = checkSemanticQuality(winner.result, params.jobText);
-  const qualityWithWarnings = { ...quality, semanticWarnings: semantic.warnings };
-
-  return { ok: true, result: winner.result, jobTextUsed: params.jobText, quality: qualityWithWarnings };
+  return { ok: true, result: winner.result, jobTextUsed: params.jobText, quality };
 }
 
 function buildLogMeta(metaRaw: unknown): Record<string, unknown> | undefined {
   if (!metaRaw || typeof metaRaw !== "object") return undefined;
   const meta = metaRaw as Record<string, unknown>;
   return {
+    mode: "quick_cash",
     source: meta.source === "upwork_feed" || meta.source === "text" ? meta.source : undefined,
-    feedHasMoreToggle: typeof meta.feedHasMoreToggle === "boolean" ? meta.feedHasMoreToggle : undefined,
-    likelyTruncated: typeof meta.likelyTruncated === "boolean" ? meta.likelyTruncated : undefined,
-    descriptionCharLength: typeof meta.descriptionCharLength === "number" ? meta.descriptionCharLength : undefined,
-    jobTextCharLength: typeof meta.jobTextCharLength === "number" ? meta.jobTextCharLength : undefined,
-    wasTrimmed: typeof meta.wasTrimmed === "boolean" ? meta.wasTrimmed : undefined,
     title: typeof meta.title === "string" ? meta.title : undefined,
     jobUrl: typeof meta.jobUrl === "string" ? meta.jobUrl : undefined,
     postedOn: typeof meta.postedOn === "string" ? meta.postedOn : undefined,
-    jobType: typeof meta.jobType === "string" ? meta.jobType : undefined,
     budget: typeof meta.budget === "string" ? meta.budget : undefined,
     duration: typeof meta.duration === "string" ? meta.duration : undefined,
     contractorTier: typeof meta.contractorTier === "string" ? meta.contractorTier : undefined,
@@ -281,21 +268,12 @@ function buildLogMeta(metaRaw: unknown): Record<string, unknown> | undefined {
   };
 }
 
-// ── GET: Poll job status ──
-
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const id = url.searchParams.get("jobId")?.trim();
-  if (!id) {
-    return NextResponse.json({ error: "Bitte jobId angeben." }, { status: 400 });
-  }
+  if (!id) return NextResponse.json({ error: "Bitte jobId angeben." }, { status: 400 });
   const rec = evalJobs.get(id);
-  if (!rec) {
-    return NextResponse.json(
-      { error: "Unbekannte jobId (evtl. Server-Neustart)." },
-      { status: 404 },
-    );
-  }
+  if (!rec) return NextResponse.json({ error: "Unbekannte jobId (evtl. Server-Neustart)." }, { status: 404 });
   return NextResponse.json({
     jobId: rec.id,
     status: rec.status,
@@ -312,15 +290,10 @@ function makeEvalJobId(): string {
     : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-// ── POST: Start evaluation ──
-
 export async function POST(request: Request) {
   const ip = extractIp(request);
   if (isRateLimited(ip)) {
-    return NextResponse.json(
-      { error: "Zu viele Anfragen. Bitte kurz warten." },
-      { status: 429 },
-    );
+    return NextResponse.json({ error: "Zu viele Anfragen. Bitte kurz warten." }, { status: 429 });
   }
 
   let body: unknown;
@@ -332,17 +305,12 @@ export async function POST(request: Request) {
 
   const parsed = evaluateRequestSchema.safeParse(body);
   if (!parsed.success) {
-    return NextResponse.json(
-      { error: parsed.error.issues[0]?.message ?? "Ungültige Anfrage." },
-      { status: 400 },
-    );
+    return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Ungültige Anfrage." }, { status: 400 });
   }
 
   const rawJob = parsed.data.jobText.trim();
   const metaRaw = parsed.data.meta;
   const asyncMode = parsed.data.async;
-  const jobType = parsed.data.jobType;
-  const offerTemplate = parsed.data.offerTemplate;
 
   let toNormalize = rawJob;
   if (looksLikeHtml(rawJob)) {
@@ -358,9 +326,7 @@ export async function POST(request: Request) {
   }
 
   const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) {
-    return NextResponse.json({ error: "Server-Konfiguration unvollständig: OPENROUTER_API_KEY fehlt." }, { status: 500 });
-  }
+  if (!apiKey) return NextResponse.json({ error: "Server-Konfiguration unvollständig: OPENROUTER_API_KEY fehlt." }, { status: 500 });
 
   const primaryModel = process.env.OPENROUTER_MODEL_PRIMARY?.trim() || process.env.OPENROUTER_MODEL?.trim() || PRIMARY_MODEL_DEFAULT;
   const fallbackModel = process.env.OPENROUTER_MODEL_FALLBACK?.trim() || FALLBACK_MODEL_DEFAULT;
@@ -371,26 +337,24 @@ export async function POST(request: Request) {
 
   const logMeta = buildLogMeta(metaRaw);
 
-  // Check cache before calling LLM
-  const cached = getCached(jobText, "sidehustle");
+  const cached = getCached(jobText, "quick_cash");
   if (cached) {
     if (asyncMode) {
       const jobId = makeEvalJobId();
       const now = Date.now();
       evalJobs.set(jobId, {
         id: jobId, status: "done", createdAt: now, updatedAt: now,
-        result: cached.result as ReturnType<typeof parseEvaluationResultV2>,
+        result: cached.result as ReturnType<typeof validateQuickCashResult>,
         jobTextUsed: cached.jobTextUsed,
         quality: cached.quality,
       });
       return NextResponse.json({ jobId }, { status: 202 });
     }
-    return NextResponse.json({ ...cached.result as object, jobTextUsed: cached.jobTextUsed });
+    return NextResponse.json({ ...(cached.result as object), jobTextUsed: cached.jobTextUsed });
   }
 
   try {
     if (asyncMode) {
-      // Dedup: reuse in-flight job with same text hash
       const textHash = jobTextHash(jobText);
       let existingJobId: string | null = null;
       evalJobs.forEach((rec, id) => {
@@ -399,9 +363,7 @@ export async function POST(request: Request) {
           if (recHash === textHash) existingJobId = id;
         }
       });
-      if (existingJobId) {
-        return NextResponse.json({ jobId: existingJobId }, { status: 202 });
-      }
+      if (existingJobId) return NextResponse.json({ jobId: existingJobId }, { status: 202 });
 
       const jobId = makeEvalJobId();
       const now = Date.now();
@@ -418,14 +380,13 @@ export async function POST(request: Request) {
           const asyncReqTimeoutMs = Math.max(ASYNC_MIN_REQUEST_TIMEOUT_MS, Math.min(ASYNC_MAX_REQUEST_TIMEOUT_MS, envInt("OPENROUTER_ASYNC_REQUEST_TIMEOUT_MS", ASYNC_DEFAULT_REQUEST_TIMEOUT_MS)));
 
           const r = await evaluateWithPolicy({
-            apiKey, jobText, primaryModel, fallbackModel, repairEnabled, hedgeEnabled,
+            apiKey, jobText, primaryModel, fallbackModel,
+            repairEnabled, hedgeEnabled,
             deadlineMs: asyncDeadlineMs, requestTimeoutMs: asyncReqTimeoutMs,
-            jobType, offerTemplate,
           });
 
           const rr = evalJobs.get(jobId);
           if (!rr) return;
-
           if (!r.ok) {
             rr.status = "error";
             rr.updatedAt = Date.now();
@@ -440,8 +401,9 @@ export async function POST(request: Request) {
           rr.jobTextUsed = r.jobTextUsed;
           rr.quality = r.quality;
 
-          setCache(jobText, r.result, r.jobTextUsed, r.quality, "sidehustle");
+          setCache(jobText, r.result, r.jobTextUsed, r.quality, "quick_cash");
 
+          // Server-side dedup marker (best-effort): ensures /api/seen-jobs includes IDs even if client doesn't mark.
           try {
             const upworkJobId =
               (logMeta && typeof (logMeta as Record<string, unknown>).jobUrl === "string"
@@ -462,10 +424,9 @@ export async function POST(request: Request) {
           if (!r) return;
           r.status = "error";
           r.updatedAt = Date.now();
-          r.error =
-            e && typeof e === "object" && "message" in e
-              ? String((e as { message: unknown }).message)
-              : "Async evaluation failed.";
+          r.error = e && typeof e === "object" && "message" in e
+            ? String((e as { message: unknown }).message)
+            : "Async evaluation failed.";
         }
       })();
 
@@ -473,15 +434,12 @@ export async function POST(request: Request) {
     }
 
     const r = await evaluateWithPolicy({
-      apiKey, jobText, primaryModel, fallbackModel, repairEnabled, hedgeEnabled,
-      deadlineMs, requestTimeoutMs, jobType, offerTemplate,
+      apiKey, jobText, primaryModel, fallbackModel,
+      repairEnabled, hedgeEnabled, deadlineMs, requestTimeoutMs,
     });
+    if (!r.ok) return NextResponse.json({ error: r.error }, { status: 504 });
 
-    if (!r.ok) {
-      return NextResponse.json({ error: r.error }, { status: 502 });
-    }
-
-    setCache(jobText, r.result, r.jobTextUsed, r.quality, "sidehustle");
+    setCache(jobText, r.result, r.jobTextUsed, r.quality, "quick_cash");
 
     try {
       const upworkJobId =
@@ -499,14 +457,13 @@ export async function POST(request: Request) {
       quality: r.quality,
     });
 
-    return NextResponse.json({
-      ...r.result,
-      jobTextUsed: r.jobTextUsed,
-    });
+    return NextResponse.json({ ...r.result, jobTextUsed: r.jobTextUsed });
   } catch (e) {
-    console.error(e);
     return NextResponse.json({
-      error: "Ein unerwarteter Fehler ist aufgetreten. Bitte erneut versuchen.",
+      error: e && typeof e === "object" && "message" in e
+        ? String((e as { message: unknown }).message)
+        : "Bewertung fehlgeschlagen.",
     }, { status: 500 });
   }
 }
+

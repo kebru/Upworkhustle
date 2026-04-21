@@ -11,7 +11,7 @@ import { useSeenJobs } from "@/hooks/useSeenJobs";
 import { normalizeJobText } from "@/lib/normalizeJobInput";
 import { splitJobPostings } from "@/lib/splitJobs";
 import { extractUpworkJobId } from "@/lib/upwork-job-id";
-import { parseJobs, startEvaluation, pollEvaluation, streamEvaluation } from "@/lib/api-client";
+import { parseJobs, startEvaluation, pollEvaluation, streamEvaluation, startQuickEvaluation, pollQuickEvaluation, streamQuickEvaluation } from "@/lib/api-client";
 import type { PollResp } from "@/lib/api-client";
 import { POLL_INTERVAL_MS, POLL_TIMEOUT_MS, CONCURRENCY } from "@/lib/constants";
 import type { EvaluationResultAny, ParsedJob } from "@/types";
@@ -88,7 +88,7 @@ function HomePage() {
   const [skippedCount, setSkippedCount] = useState(0);
 
   const { save, saveMany } = useEvaluationHistory();
-  const { isSeen, markSeen } = useSeenJobs();
+  const { isSeen, markSeen, refresh: refreshSeen, ready: seenReady } = useSeenJobs();
   const { templates: offerTemplates, getById: getTemplateById } = useOfferTemplates();
 
   const goHistory = useCallback(() => router.push("/history"), [router]);
@@ -107,14 +107,26 @@ function HomePage() {
 
   const [currentJobType, setCurrentJobType] = useState<JobType>("Automatisch");
   const [currentOfferTemplate, setCurrentOfferTemplate] = useState<string | undefined>();
+  const [currentMode, setCurrentMode] = useState<"sidehustle" | "quick_cash">("sidehustle");
 
-  async function handleSubmit(jobText: string, jobType: JobType = "Automatisch", offerTemplateId?: string) {
+  async function handleSubmit(
+    jobText: string,
+    jobType: JobType = "Automatisch",
+    offerTemplateId?: string,
+    mode: "sidehustle" | "quick_cash" = "sidehustle",
+  ) {
+    setCurrentMode(mode);
     setCurrentJobType(jobType);
     const tpl = offerTemplateId ? getTemplateById(offerTemplateId) : undefined;
     setCurrentOfferTemplate(tpl?.content);
     setError(null);
     setRuns([]);
     setSkippedCount(0);
+
+    // Important: ensure seen set is loaded before dedup, otherwise auto-import runs can re-evaluate duplicates.
+    if (!seenReady) {
+      await refreshSeen();
+    }
 
     let parsedJobs: ParsedJob[];
     try {
@@ -135,6 +147,17 @@ function HomePage() {
     }
 
     const totalBefore = parsedJobs.length;
+    // First: dedup within the current input (same job appearing twice in a feed/modal export)
+    const seenInBatch = new Set<string>();
+    parsedJobs = parsedJobs.filter((j) => {
+      const upworkId = extractUpworkJobId(j.jobUrl ?? "") ?? extractUpworkJobId(j.jobText);
+      const key = upworkId ? `id:${upworkId}` : `hash:${j.jobText.toLowerCase().replace(/\s+/g, " ").trim()}`;
+      if (seenInBatch.has(key)) return false;
+      seenInBatch.add(key);
+      return true;
+    });
+
+    // Second: global dedup (local + server seen set)
     parsedJobs = parsedJobs.filter((j) => !isSeen(j.jobText, j.jobUrl));
     const skipped = totalBefore - parsedJobs.length;
     setSkippedCount(skipped);
@@ -149,6 +172,7 @@ function HomePage() {
     const initialRuns: JobRun[] = parsedJobs.map((j) => ({
       id: makeRunId(),
       jobText: j.jobText,
+      mode,
       title: j.title,
       postedOn: j.postedOn,
       jobType: j.jobType,
@@ -175,7 +199,9 @@ function HomePage() {
         );
 
         const run = initialRuns[i];
-        const jobId = await startEvaluation(run.jobText, {
+        const startFn = run.mode === "quick_cash" ? startQuickEvaluation : startEvaluation;
+        const jobId = await startFn(run.jobText, {
+          mode: run.mode,
           source: run.source,
           feedHasMoreToggle: run.feedHasMoreToggle,
           likelyTruncated: run.likelyTruncated,
@@ -190,7 +216,9 @@ function HomePage() {
           duration: run.duration,
           contractorTier: run.contractorTier,
           skillsCount: run.skills?.length ?? 0,
-        }, { jobType: currentJobType !== "Automatisch" ? currentJobType : undefined, offerTemplate: currentOfferTemplate });
+        }, run.mode === "quick_cash"
+          ? undefined
+          : { jobType: currentJobType !== "Automatisch" ? currentJobType : undefined, offerTemplate: currentOfferTemplate });
 
         setRuns((prev) =>
           prev.map((r, j) => (j === i ? { ...r, evaluationJobId: jobId } : r)),
@@ -227,7 +255,8 @@ function HomePage() {
           const timer = createForegroundTimer();
           await new Promise<void>((resolve) => {
             let fallbackTriggered = false;
-            const unsub = streamEvaluation(jobId, (data) => {
+            const streamFn = run.mode === "quick_cash" ? streamQuickEvaluation : streamEvaluation;
+            const unsub = streamFn(jobId, (data) => {
               if (applyResult(data)) { timer.dispose(); resolve(); }
             }, () => {
               if (!fallbackTriggered) {
@@ -253,9 +282,10 @@ function HomePage() {
 
         // Polling fallback — only count foreground time, poll immediately on tab focus
         const timer = createForegroundTimer();
+        const pollFn = run.mode === "quick_cash" ? pollQuickEvaluation : pollEvaluation;
         while (timer.foregroundMs() < POLL_TIMEOUT_MS) {
           await waitForVisible();
-          const p = await pollEvaluation(jobId);
+          const p = await pollFn(jobId);
           if (applyResult(p)) { timer.dispose(); return; }
           await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
         }
@@ -303,14 +333,40 @@ function HomePage() {
     }
   }
 
+  function bestEffortJobUrlFromText(text: string): string | undefined {
+    const urlLine = text.match(/(?:^|\n)\s*URL:\s*(https?:\/\/[^\s]+)\s*(?:\n|$)/i)?.[1]?.trim();
+    if (urlLine?.includes("upwork.com")) return urlLine;
+    const direct = text.match(/https?:\/\/www\.upwork\.com\/jobs\/~\d{10,}/)?.[0]?.trim();
+    if (direct) return direct;
+    const id = extractUpworkJobId(text);
+    return id ? `https://www.upwork.com/jobs/~${id}` : undefined;
+  }
+
+  function bestEffortTitleFromText(text: string): string | undefined {
+    const fromTitleLine = text.match(/(?:^|\n)\s*TITLE:\s*(.+)\s*(?:\n|$)/i)?.[1]?.trim();
+    const candidate = (fromTitleLine || "").replace(/^\*+|\*+$/g, "").trim();
+    if (candidate.length >= 6) return candidate.slice(0, 180);
+    const lines = text
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+    const first = lines.find((l) => !/^(URL|POSTED|TYPE|LEVEL|DURATION|BUDGET|SKILLS|DESCRIPTION)\s*:/i.test(l));
+    if (!first) return undefined;
+    const cleaned = first.replace(/^\*+|\*+$/g, "").trim();
+    return cleaned.length >= 6 ? cleaned.slice(0, 180) : undefined;
+  }
+
   function handleSaveOne(run: JobRun) {
     if (!run.result || !run.jobText.trim()) return;
+    const jobUrl = run.jobUrl || bestEffortJobUrlFromText(run.jobText);
+    const title = run.title || bestEffortTitleFromText(run.jobText);
     save({
       jobSnippet: run.jobText,
       evaluation: run.result,
-      title: run.title,
-      jobUrl: run.jobUrl,
-      upworkJobId: run.jobUrl ? extractUpworkJobId(run.jobUrl) : undefined,
+      tags: [run.mode === "quick_cash" ? "mode:quick_cash" : "mode:sidehustle"],
+      title,
+      jobUrl,
+      upworkJobId: jobUrl ? extractUpworkJobId(jobUrl) : extractUpworkJobId(run.jobText),
       budget: run.budget,
       duration: run.duration,
       skills: run.skills,
@@ -329,9 +385,10 @@ function HomePage() {
       done.map((r) => ({
         jobSnippet: r.jobText,
         evaluation: r.result,
-        title: r.title,
-        jobUrl: r.jobUrl,
-        upworkJobId: r.jobUrl ? extractUpworkJobId(r.jobUrl) : undefined,
+        tags: [r.mode === "quick_cash" ? "mode:quick_cash" : "mode:sidehustle"],
+        title: r.title || bestEffortTitleFromText(r.jobText),
+        jobUrl: r.jobUrl || bestEffortJobUrlFromText(r.jobText),
+        upworkJobId: (r.jobUrl ? extractUpworkJobId(r.jobUrl) : undefined) || extractUpworkJobId(r.jobText),
         budget: r.budget,
         duration: r.duration,
         skills: r.skills,
@@ -352,18 +409,23 @@ function HomePage() {
       prev.map((r, j) => (j === index ? { ...r, status: "loading" as const, error: undefined } : r)),
     );
     try {
-      const jobId = await startEvaluation(run.jobText, {
+      const startFn = run.mode === "quick_cash" ? startQuickEvaluation : startEvaluation;
+      const jobId = await startFn(run.jobText, {
+        mode: run.mode,
         source: run.source,
         title: run.title,
         jobUrl: run.jobUrl,
-      });
+      }, run.mode === "quick_cash"
+        ? undefined
+        : { jobType: currentJobType !== "Automatisch" ? currentJobType : undefined, offerTemplate: currentOfferTemplate });
       setRuns((prev) =>
         prev.map((r, j) => (j === index ? { ...r, evaluationJobId: jobId } : r)),
       );
       const retryTimer = createForegroundTimer();
+      const pollFn = run.mode === "quick_cash" ? pollQuickEvaluation : pollEvaluation;
       while (retryTimer.foregroundMs() < POLL_TIMEOUT_MS) {
         await waitForVisible();
-        const p = await pollEvaluation(jobId);
+        const p = await pollFn(jobId);
         if (p.status === "done" && p.result) {
           markSeen([{ jobText: run.jobText, jobUrl: run.jobUrl }]);
           setRuns((prev) =>
@@ -404,13 +466,15 @@ function HomePage() {
     if (autoEvalTriggered.current) return;
     const jobText = searchParams.get("autoEval");
     const autoEvalId = searchParams.get("autoEvalId");
+    const modeParam = searchParams.get("mode");
+    const mode = modeParam === "quick_cash" ? "quick_cash" : "sidehustle";
     if (loading) return;
 
     if (jobText) {
       autoEvalTriggered.current = true;
       window.history.replaceState({}, "", "/");
       setDraftJobText(jobText);
-      handleSubmit(jobText);
+      handleSubmit(jobText, "Automatisch", undefined, mode);
       return;
     }
 
@@ -426,7 +490,7 @@ function HomePage() {
             return;
           }
           setDraftJobText(data.jobText);
-          handleSubmit(data.jobText);
+          handleSubmit(data.jobText, "Automatisch", undefined, mode);
         } catch (e) {
           setError(e && typeof e === "object" && "message" in e ? String((e as { message: unknown }).message) : "Konnte Pending-Jobs nicht laden.");
         }
@@ -440,8 +504,8 @@ function HomePage() {
     const newJobs = feedJobs.filter((j) => !isSeen(j.jobText, j.jobUrl));
     if (newJobs.length === 0) return;
     const jobText = newJobs.map((j) => j.jobText).join("\n---JOBSPLIT---\n");
-    handleSubmit(jobText, currentJobType);
-  }, [isSeen, currentJobType]);
+    handleSubmit(jobText, currentJobType, undefined, currentMode);
+  }, [isSeen, currentJobType, currentMode]);
 
   const doneCount = runs.filter((r) => r.status === "done").length;
 

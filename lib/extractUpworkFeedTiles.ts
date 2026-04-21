@@ -70,10 +70,16 @@ function looksTruncatedByContent(description: string, feedHasMoreToggle: boolean
 export function extractUpworkFeedTiles(html: string): UpworkFeedJobItem[] | null {
   const $ = cheerio.load(html);
 
+  // Path A: "Best Matches" feed container
   const list = $('[data-test="job-tile-list"]').first();
-  if (!list.length) return null;
+  const tilesA = list.length
+    ? list.find('section.air3-card-section[data-ev-opening_uid]')
+    : $();
 
-  const tiles = list.find('section.air3-card-section[data-ev-opening_uid]');
+  // Path B: "Search Jobs" results use <article data-test="JobTile">
+  const tilesB = $('article[data-test="JobTile"]');
+
+  const tiles = tilesA.length ? tilesA : tilesB;
   if (!tiles.length) return null;
 
   const results: UpworkFeedJobItem[] = [];
@@ -81,7 +87,21 @@ export function extractUpworkFeedTiles(html: string): UpworkFeedJobItem[] | null
   tiles.each((_, el) => {
     const tile = $(el);
 
-    const titleAnchor = tile.find("h3.job-tile-title a").first();
+    // Title + URL: support both DOMs
+    const titleAnchor =
+      tile
+        .find('[data-test*="job-tile-title-link"]')
+        .filter((_, a) => {
+          const href = $(a).attr("href");
+          return typeof href === "string" && href.startsWith("/jobs/");
+        })
+        .first()
+        .add(tile.find("h3.job-tile-title a").filter((_, a) => {
+          const href = $(a).attr("href");
+          return typeof href === "string" && href.startsWith("/jobs/");
+        }).first())
+        .first();
+
     const title = cleanText(titleAnchor.text());
     if (!title) return;
 
@@ -91,23 +111,27 @@ export function extractUpworkFeedTiles(html: string): UpworkFeedJobItem[] | null
         ? `https://www.upwork.com${jobUrlRaw}`
         : undefined;
 
-    const postedOn = cleanText(tile.find('[data-test="posted-on"]').first().text());
+    const postedOn =
+      cleanText(tile.find('[data-test="posted-on"]').first().text()) ||
+      cleanText(tile.find('[data-test="job-pubilshed-date"]').first().text());
 
     const jobType = cleanText(tile.find('[data-test="job-type"]').first().text());
-    const budget = cleanText(tile.find('[data-test="budget"]').first().text());
+    const budget =
+      cleanText(tile.find('[data-test="budget"]').first().text()) ||
+      cleanText(tile.find('[data-test="is-fixed-price"]').first().text());
     const duration = cleanText(tile.find('[data-test="duration"]').first().text());
     const contractorTier = cleanText(
       tile.find('[data-test="contractor-tier"]').first().text(),
     );
 
-    const description = cleanText(
-      tile.find('[data-test="job-description-text"]').first().text(),
-    );
+    const description =
+      cleanText(tile.find('[data-test="job-description-text"]').first().text()) ||
+      cleanText(tile.find('[data-test*="JobDescription"]').first().text());
 
     // Skills are rendered as <a data-test="attr-item">Skill</a>
     const skills = uniqueStrings(
       tile
-        .find('[data-test="token-container"] a[data-test="attr-item"]')
+        .find('[data-test="token-container"] a[data-test="attr-item"], [data-test*="TokenClamp JobAttrs"] [data-test="token"]')
         .toArray()
         .map((a) => cleanText($(a).text())),
     );

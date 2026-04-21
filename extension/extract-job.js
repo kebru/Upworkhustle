@@ -13,7 +13,11 @@
 
   const url = location.href;
   const jobIdMatch = url.match(/~(\d{10,})/);
-  const jobUrl = jobIdMatch ? `https://www.upwork.com/jobs/~${jobIdMatch[1]}` : url;
+  // Only treat pages with a /jobs/~<id> as job detail pages.
+  if (!jobIdMatch) {
+    return { jobText: "", charCount: 0, isJobDetail: false, pageUrl: url };
+  }
+  const jobUrl = `https://www.upwork.com/jobs/~${jobIdMatch[1]}`;
 
   // Title
   const titleEl =
@@ -63,6 +67,7 @@
   // Build full job text like user would paste
   const parts = [];
   if (title) parts.push(title);
+  if (jobUrl) parts.push(`URL: ${jobUrl}`);
   if (jobType) parts.push(jobType);
   if (budget) parts.push(budget);
   if (duration) parts.push(duration);
@@ -81,5 +86,6 @@
     skills,
     source: "upwork_feed",
     charCount: jobText.length,
+    isJobDetail: true,
   };
 })();

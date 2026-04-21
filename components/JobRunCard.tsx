@@ -8,6 +8,7 @@ import type { EvaluationResultAny } from "@/types";
 export type JobRun = {
   id: string;
   jobText: string;
+  mode?: "sidehustle" | "quick_cash";
   title?: string;
   postedOn?: string;
   jobType?: string;
@@ -43,6 +44,11 @@ export function JobRunCard({ run, index, onSave, onRetry }: Props) {
           <span className="text-xs font-semibold uppercase tracking-wide text-accent">
             Job {index + 1}
           </span>
+          {run.mode === "quick_cash" && (
+            <span className="ml-2 inline-flex rounded-full bg-white/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white/80 ring-1 ring-white/15">
+              Quick Cash
+            </span>
+          )}
           <p className="mt-1 text-sm font-medium leading-snug text-white">
             {run.title || extractJobHeadline(run.jobText)}
           </p>

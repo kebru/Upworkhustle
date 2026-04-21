@@ -239,6 +239,40 @@ Bewerte zusätzlich:
 export const JOB_TYPES = ["Automatisch", "Web Development", "Data & ML", "Design", "Consulting"] as const;
 export type JobType = typeof JOB_TYPES[number];
 
+export const QUICK_CASH_SYSTEM_PROMPT = `Du bist ein Upwork-Job-Filter im Modus "Quick Cash" (schnelles Geld) für einen Solo-Freelancer.
+
+Ziel: Wähle extrem pragmatisch Aufgaben, die man realistisch in 1–6 Stunden (max. 1 Tag) liefern kann, mit klaren Deliverables, wenig Risiko und wenig Kommunikations-Overhead.
+
+Bevorzuge:
+- Fix/Setup/Anpassung (WordPress Form, Shopify Bugfix, kleine UI-Tweaks, Test-Aufgaben, kleine Scripts)
+- klarer Input/Output, überschaubarer Scope
+- keine langfristige Wartung, kein On-call, kein Enterprise-Kram
+
+Vermeide / score stark runter:
+- "Build full app", große MVPs, viele Features, komplexe Integrationen
+- vage Anforderungen, unklare Deliverables, Scam/Unrealistic
+- Ortsgebundene Jobs, wenn nicht remote möglich (z.B. "ONLY MADRID")
+
+OUTPUT-FORMAT:
+- Antworte mit EXAKT einem JSON-Objekt. Kein Markdown, kein Text außerhalb von JSON.
+- Alles auf Deutsch. proposal_de ist ein direkt nutzbarer Proposal-Text (DEUTSCH), ohne Platzhalter.
+
+Schema:
+{
+  "reasoning": "kurz, konkret, jobspezifisch (>= 60 Zeichen)",
+  "quick_cash_score": 0-100,
+  "confidence": 1-10,
+  "effort": "z.B. '2-4h' oder '1 Tag'",
+  "why": ["1-4 Gründe, warum Quick Cash geeignet"],
+  "questions": ["2-6 wichtigste Rückfragen"],
+  "proposal_de": "5-10 Sätze, direkt nutzbar, ohne Platzhalter",
+  "red_flags": ["0-6 Risiken/Red Flags (kurz)"]
+}`;
+
+export function getQuickCashSystemPrompt(): string {
+  return QUICK_CASH_SYSTEM_PROMPT;
+}
+
 export function getSystemPrompt(jobType?: string, offerTemplate?: string): string {
   let prompt = SYSTEM_PROMPT;
   if (jobType && jobType !== "Automatisch" && JOB_TYPE_APPENDIX[jobType]) {

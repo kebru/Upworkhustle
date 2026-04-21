@@ -28,8 +28,25 @@ const memSeenByHash = new Map<string, { upworkJobId?: string; seenAt: string }>(
 function warnOnce(msg: string, extra?: unknown) {
   if (_warned) return;
   _warned = true;
+  const debug =
+    process.env.DB_DEBUG?.trim() === "1" ||
+    process.env.DB_DEBUG?.trim()?.toLowerCase() === "true";
+
+  if (debug && extra) {
+    // eslint-disable-next-line no-console
+    console.warn(msg, extra);
+    return;
+  }
+
+  const extraMsg =
+    extra && typeof extra === "object" && "message" in extra
+      ? String((extra as { message: unknown }).message)
+      : undefined;
+  const extraOneLine = extraMsg
+    ? extraMsg.replace(/\s+/g, " ").trim().slice(0, 260)
+    : undefined;
   // eslint-disable-next-line no-console
-  console.warn(msg, extra ?? "");
+  console.warn(msg + (extraOneLine ? ` (${extraOneLine})` : ""));
 }
 
 function tryLoadSqlite(): SqliteDb | null {
@@ -92,19 +109,21 @@ function tryLoadSqlite(): SqliteDb | null {
   }
 }
 
-function getDb(): SqliteDb {
-  if (_db) return _db;
-
+function ensureBackend() {
+  if (_mode === "memory") return;
+  if (_db) return;
   const loaded = tryLoadSqlite();
-  if (!loaded) {
-    _mode = "memory";
-    // Provide a tiny shim so callers that accidentally reach getDb() in memory mode explode loudly.
-    // We try to keep all exported functions from calling getDb() when _mode==="memory".
-    throw new Error("SQLite unavailable (memory fallback active).");
+  if (loaded) {
+    _db = loaded;
+    _mode = "sqlite";
+    return;
   }
-  _db = loaded;
-  _mode = "sqlite";
-  return loaded;
+  _mode = "memory";
+}
+
+function getDb(): SqliteDb | null {
+  ensureBackend();
+  return _db;
 }
 
 interface EvalRow {
@@ -146,6 +165,7 @@ export function dbGetAll(options?: {
   viable?: boolean;
   starred?: boolean;
 }): SavedEvaluation[] {
+  ensureBackend();
   if (_mode === "memory") {
     let entries = Array.from(memEvaluations.values());
     entries.sort((a, b) => (a.savedAt < b.savedAt ? 1 : a.savedAt > b.savedAt ? -1 : 0));
@@ -167,6 +187,7 @@ export function dbGetAll(options?: {
   }
 
   const db = getDb();
+  if (!db) return [];
   let sql = "SELECT * FROM evaluations ORDER BY saved_at DESC";
   const params: unknown[] = [];
 
@@ -196,9 +217,11 @@ export function dbGetAll(options?: {
 }
 
 export function dbGetById(id: string): SavedEvaluation | undefined {
+  ensureBackend();
   if (_mode === "memory") return memEvaluations.get(id);
 
   const db = getDb();
+  if (!db) return undefined;
   const row = db.prepare("SELECT * FROM evaluations WHERE id = ?").get(id) as EvalRow | undefined;
   return row ? rowToEntry(row) : undefined;
 }
@@ -218,20 +241,30 @@ function entryParams(e: SavedEvaluation) {
 }
 
 export function dbInsert(entry: SavedEvaluation): void {
+  ensureBackend();
   if (_mode === "memory") {
     memEvaluations.set(entry.id, entry);
     return;
   }
   const db = getDb();
+  if (!db) {
+    memEvaluations.set(entry.id, entry);
+    return;
+  }
   db.prepare(INSERT_SQL).run(...entryParams(entry));
 }
 
 export function dbInsertMany(entries: SavedEvaluation[]): void {
+  ensureBackend();
   if (_mode === "memory") {
     for (const e of entries) memEvaluations.set(e.id, e);
     return;
   }
   const db = getDb();
+  if (!db) {
+    for (const e of entries) memEvaluations.set(e.id, e);
+    return;
+  }
   const stmt = db.prepare(INSERT_SQL);
   const insertAll = db.transaction((items: SavedEvaluation[]) => {
     for (const e of items) stmt.run(...entryParams(e));
@@ -240,6 +273,7 @@ export function dbInsertMany(entries: SavedEvaluation[]): void {
 }
 
 export function dbFindByUpworkJobId(upworkJobId: string): SavedEvaluation | undefined {
+  ensureBackend();
   if (_mode === "memory") {
     for (const e of memEvaluations.values()) {
       if (e.upworkJobId && e.upworkJobId === upworkJobId) return e;
@@ -247,6 +281,7 @@ export function dbFindByUpworkJobId(upworkJobId: string): SavedEvaluation | unde
     return undefined;
   }
   const db = getDb();
+  if (!db) return undefined;
   const row = db.prepare("SELECT * FROM evaluations WHERE upwork_job_id = ? LIMIT 1").get(upworkJobId) as EvalRow | undefined;
   return row ? rowToEntry(row) : undefined;
 }
@@ -255,6 +290,7 @@ export function dbUpdate(
   id: string,
   patch: Partial<Pick<SavedEvaluation, "tags" | "starred">>,
 ): void {
+  ensureBackend();
   if (_mode === "memory") {
     const current = memEvaluations.get(id);
     if (!current) return;
@@ -266,6 +302,7 @@ export function dbUpdate(
     return;
   }
   const db = getDb();
+  if (!db) return;
   const sets: string[] = [];
   const params: unknown[] = [];
 
@@ -284,21 +321,25 @@ export function dbUpdate(
 }
 
 export function dbDelete(id: string): void {
+  ensureBackend();
   if (_mode === "memory") {
     memEvaluations.delete(id);
     return;
   }
   const db = getDb();
+  if (!db) return;
   db.prepare("DELETE FROM evaluations WHERE id = ?").run(id);
 }
 
 export function dbDeleteMany(ids: string[]): void {
   if (ids.length === 0) return;
+  ensureBackend();
   if (_mode === "memory") {
     for (const id of ids) memEvaluations.delete(id);
     return;
   }
   const db = getDb();
+  if (!db) return;
   const placeholders = ids.map(() => "?").join(",");
   db.prepare(`DELETE FROM evaluations WHERE id IN (${placeholders})`).run(...ids);
 }
@@ -307,6 +348,7 @@ export function dbDeleteMany(ids: string[]): void {
 
 export function dbMarkSeen(entries: Array<{ hash: string; upworkJobId?: string }>): void {
   if (entries.length === 0) return;
+  ensureBackend();
   if (_mode === "memory") {
     const now = new Date().toISOString();
     for (const e of entries) {
@@ -316,6 +358,14 @@ export function dbMarkSeen(entries: Array<{ hash: string; upworkJobId?: string }
     return;
   }
   const db = getDb();
+  if (!db) {
+    const now = new Date().toISOString();
+    for (const e of entries) {
+      if (memSeenByHash.has(e.hash)) continue;
+      memSeenByHash.set(e.hash, { upworkJobId: e.upworkJobId, seenAt: now });
+    }
+    return;
+  }
   const stmt = db.prepare("INSERT OR IGNORE INTO seen_jobs (hash, upwork_job_id, seen_at) VALUES (?, ?, ?)");
   const now = new Date().toISOString();
   const insertAll = db.transaction((items: typeof entries) => {
@@ -325,13 +375,16 @@ export function dbMarkSeen(entries: Array<{ hash: string; upworkJobId?: string }
 }
 
 export function dbGetAllSeenHashes(): string[] {
+  ensureBackend();
   if (_mode === "memory") return Array.from(memSeenByHash.keys());
   const db = getDb();
+  if (!db) return Array.from(memSeenByHash.keys());
   const rows = db.prepare("SELECT hash FROM seen_jobs").all() as Array<{ hash: string }>;
   return rows.map((r) => r.hash);
 }
 
 export function dbGetAllSeenUpworkJobIds(): string[] {
+  ensureBackend();
   if (_mode === "memory") {
     const out = new Set<string>();
     for (const v of memSeenByHash.values()) {
@@ -340,6 +393,24 @@ export function dbGetAllSeenUpworkJobIds(): string[] {
     return Array.from(out);
   }
   const db = getDb();
+  if (!db) return [];
   const rows = db.prepare("SELECT DISTINCT upwork_job_id FROM seen_jobs WHERE upwork_job_id IS NOT NULL").all() as Array<{ upwork_job_id: string }>;
+  return rows.map((r) => r.upwork_job_id);
+}
+
+export function dbGetAllEvaluationUpworkJobIds(): string[] {
+  ensureBackend();
+  if (_mode === "memory") {
+    const out = new Set<string>();
+    for (const e of memEvaluations.values()) {
+      if (e.upworkJobId) out.add(e.upworkJobId);
+    }
+    return Array.from(out);
+  }
+  const db = getDb();
+  if (!db) return [];
+  const rows = db
+    .prepare("SELECT DISTINCT upwork_job_id FROM evaluations WHERE upwork_job_id IS NOT NULL")
+    .all() as Array<{ upwork_job_id: string }>;
   return rows.map((r) => r.upwork_job_id);
 }

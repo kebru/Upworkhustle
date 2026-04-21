@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { EvaluationResult, EvaluationResultAny, EvaluationResultV2 } from "@/types";
+import type { EvaluationResult, EvaluationResultAny, EvaluationResultQuickCash, EvaluationResultV2 } from "@/types";
 import { formatEffortForDisplay } from "@/lib/formatEffortDisplay";
 import { getOverallScoreLabel } from "@/lib/scoreLabel";
 
@@ -63,8 +63,13 @@ export function EvaluationResultCard({ result }: Props) {
     typeof (r as { viable_consulting?: unknown }).viable_consulting === "boolean" &&
     typeof (r as { offer_message?: unknown }).offer_message === "string";
 
+  const isQuick = (r: EvaluationResultAny): r is EvaluationResultQuickCash =>
+    typeof (r as { quick_cash_score?: unknown }).quick_cash_score === "number" &&
+    typeof (r as { proposal_de?: unknown }).proposal_de === "string";
+
   const v2 = isV2(result) ? result : null;
-  const v1: EvaluationResult | null = v2 ? null : (result as EvaluationResult);
+  const quick = isQuick(result) ? result : null;
+  const v1: EvaluationResult | null = v2 || quick ? null : (result as EvaluationResult);
 
   return (
     <div className="space-y-6 rounded-xl border border-white/10 bg-surface/80 p-6 shadow-lg">
@@ -82,6 +87,11 @@ export function EvaluationResultCard({ result }: Props) {
           >
             Cursor-lösbar? {result.viable ? "Ja" : "Nein"}
           </span>
+          {quick && (
+            <span className="inline-flex rounded-full bg-white/10 px-3 py-1 text-sm font-medium text-white/85 ring-1 ring-white/15">
+              Modus: Quick Cash · Score: {quick.quick_cash_score}/100
+            </span>
+          )}
           {v2 && (
             <>
               <span
@@ -175,6 +185,15 @@ export function EvaluationResultCard({ result }: Props) {
           Detaillierter Report
         </h2>
         <div className="space-y-4 text-sm leading-relaxed">
+          {quick && Array.isArray(quick.questions) && quick.questions.length > 0 && (
+            <CollapsibleSection title="Rückfragen" defaultOpen={result.overall_score < 7}>
+              <ul className="list-inside list-disc space-y-1 text-white/85">
+                {quick.questions.map((q, i) => (
+                  <li key={i}>{q}</li>
+                ))}
+              </ul>
+            </CollapsibleSection>
+          )}
           <CollapsibleSection title="Risiken" defaultOpen={result.overall_score < 7}>
             <ul className="list-inside list-disc space-y-1 text-white/85">
               {result.risks.map((r, i) => (
@@ -184,7 +203,7 @@ export function EvaluationResultCard({ result }: Props) {
           </CollapsibleSection>
           <CollapsibleSection title="Nächste Schritte" defaultOpen={result.overall_score < 7}>
             <ul className="list-inside list-disc space-y-1 text-white/85">
-              {(v2 ? v2.next_steps : v1?.steps ?? []).map((s, i) => (
+              {(v2 ? v2.next_steps : v1?.steps ?? result.steps ?? []).map((s, i) => (
                 <li key={i}>{s}</li>
               ))}
             </ul>
@@ -197,6 +216,17 @@ export function EvaluationResultCard({ result }: Props) {
                 ))}
               </ul>
             </CollapsibleSection>
+          )}
+          {quick && typeof quick.proposal_de === "string" && (
+            <div>
+              <div className="mb-2 flex items-center">
+                <h3 className="font-medium text-white">Proposal (DE)</h3>
+                <CopyButton text={quick.proposal_de} />
+              </div>
+              <pre className="whitespace-pre-wrap rounded-lg border border-white/10 bg-black/25 p-3 text-white/90">
+                {quick.proposal_de}
+              </pre>
+            </div>
           )}
           {v2 && typeof v2.offer_message === "string" && (
             <div>

@@ -25,8 +25,12 @@ export function jobTextHash(jobText: string): string {
   return simpleHash(normalizeForCache(jobText));
 }
 
-export function getCached(jobText: string): CacheEntry | null {
-  const key = simpleHash(normalizeForCache(jobText));
+function makeKey(jobText: string, namespace: string): string {
+  return simpleHash(`${namespace}:${normalizeForCache(jobText)}`);
+}
+
+export function getCached(jobText: string, namespace = "sidehustle"): CacheEntry | null {
+  const key = makeKey(jobText, namespace);
   const entry = cache.get(key);
   if (!entry) return null;
   if (Date.now() - entry.cachedAt > CACHE_TTL_MS) {
@@ -36,7 +40,7 @@ export function getCached(jobText: string): CacheEntry | null {
   return entry;
 }
 
-export function setCache(jobText: string, result: unknown, jobTextUsed: string, quality: unknown): void {
-  const key = simpleHash(normalizeForCache(jobText));
+export function setCache(jobText: string, result: unknown, jobTextUsed: string, quality: unknown, namespace = "sidehustle"): void {
+  const key = makeKey(jobText, namespace);
   cache.set(key, { result, jobTextUsed, quality, cachedAt: Date.now() });
 }

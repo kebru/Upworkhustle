@@ -7,7 +7,9 @@ Bewertet Upwork-Job-Postings automatisch auf Eignung als Solo-Side-Hustle mit Cu
 - **Job-Bewertung**: Paste von Upwork-HTML oder Text → automatische Analyse
 - **AI-Coding-Fit**: Zentrale Bewertung ob der Job mit Vibe Coding (Cursor/Claude Code) umsetzbar ist
 - **Chrome Extension**: Ein-Klick Extraktion von Upwork Job-Seiten und Feed — keine manuelle Copy-Paste nötig
-- **Zwei Modi**: BUILD (≤20h Solo) und CONSULTING (Setup + Handover)
+- **Zwei Workflows**:
+  - **Sidehustle** (BUILD ≤20h / CONSULTING Setup + Handover)
+  - **Quick Cash**: Fokus auf schnelle, kleine Jobs (1–6h / max. 1 Tag) + Proposal auf Deutsch
 - **Multi-Job**: Mehrere Jobs gleichzeitig bewerten (Feed-HTML oder `---` Trenner)
 - **Angebotstext-Generierung**: Separater LLM-Schritt mit ehrlicher Persona (Claude Sonnet 4) für Upwork-Proposals
 - **Dual-Model-Strategie**: Primary + Fallback Modell mit Deadline-Race
@@ -52,7 +54,10 @@ App öffnen: http://localhost:3000
 | `OPENROUTER_MODEL_FALLBACK` | Nein | `openai/gpt-5.4-mini` | Fallback-Modell |
 | `OPENROUTER_HEDGE` | Nein | `1` | Beide Modelle parallel starten |
 | `OPENROUTER_REPAIR` | Nein | `1` | JSON-Repair bei fehlerhaften Responses |
-| `OPENROUTER_DEADLINE_MS` | Nein | `10000` | Max. Wartezeit (sync) |
+| `OPENROUTER_DEADLINE_MS` | Nein | `15000` | Max. Wartezeit (sync) |
+| `OPENROUTER_REQUEST_TIMEOUT_MS` | Nein | `12000` | Request Timeout pro Modell (sync) |
+| `OPENROUTER_ASYNC_DEADLINE_MS` | Nein | `90000` | Max. Wartezeit (async) |
+| `OPENROUTER_ASYNC_REQUEST_TIMEOUT_MS` | Nein | `35000` | Request Timeout pro Modell (async) |
 | `LOG_EVALUATIONS` | Nein | `0` | JSONL-Logging aktivieren |
 
 ## Scripts
@@ -81,7 +86,13 @@ Die Extension extrahiert Jobs direkt von Upwork-Seiten — kein manuelles Copy-P
 ### Nutzung
 
 - **Job-Detailseite** (`upwork.com/jobs/~XXX`): Klick auf "Job extrahieren & bewerten" → App öffnet sich mit laufender Evaluation
-- **Feed/Search-Seite**: Klick auf "Feed-Seite extrahieren" → alle sichtbaren Jobs werden auf einmal extrahiert und bewertet
+- **Feed-Seite** (`/nx/find-work/...`): Klick auf "Feed-Seite extrahieren (alle Jobs)" → alle sichtbaren Jobs werden auf einmal extrahiert und bewertet
+- **Search Jobs Seite** (`/nx/search/jobs?...`): Klick auf **"Search Jobs → Quick Cash (alle Jobs)"** → alle sichtbaren Jobs werden extrahiert und im Quick-Cash Workflow bewertet
+
+### Quick Cash Modus
+
+- In der App gibt es einen **Modus-Switch** (Sidehustle vs Quick Cash).
+- Die Extension öffnet die App mit `mode=quick_cash` (URL-Parameter), damit direkt der Quick-Cash Flow genutzt wird.
 
 ### Sicherheit
 
@@ -109,6 +120,19 @@ Startet eine LLM-Bewertung.
 ### GET /api/evaluate?jobId=...
 
 Pollt den Status einer async Bewertung.
+
+**Response**: `{ "status": "queued"|"running"|"done"|"error", "result": {...} }`
+
+### POST /api/evaluate-quick
+
+Startet eine **Quick-Cash** Bewertung (eigener Prompt + eigenes Schema).
+
+**Request**: `{ "jobText": "...", "async": true, "meta": {...} }`
+**Response (async)**: `{ "jobId": "uuid" }` (HTTP 202)
+
+### GET /api/evaluate-quick?jobId=...
+
+Pollt den Status einer async Quick-Cash Bewertung.
 
 **Response**: `{ "status": "queued"|"running"|"done"|"error", "result": {...} }`
 
@@ -168,6 +192,7 @@ app/
   api/
     parse/route.ts          # HTML → strukturierte Jobs
     evaluate/route.ts       # LLM-Bewertung (async + sync)
+    evaluate-quick/route.ts # Quick Cash Bewertung (async + sync)
     evaluations/route.ts    # CRUD für gespeicherte Bewertungen (SQLite)
     generate-offer/route.ts # Angebotstext-Generierung (Claude Sonnet 4)
     seen-jobs/route.ts      # Dedup-Marker (Hash + Upwork Job-ID)
@@ -200,7 +225,16 @@ extension/
   manifest.json             # Chrome Extension (Manifest V3)
   popup.html/js             # Extension Popup UI
   extract-job.js            # Job-Detailseite Extraktion
-  extract-feed.js           # Feed/Search Extraktion
+  extract-feed.js           # Feed + Search Jobs Extraktion
 __tests__/
   lib/                      # Unit Tests für lib/*
+```
+
+## Maintenance / DB Cleanup
+
+Wenn du alte DB-Einträge reparieren oder Duplikate bereinigen willst:
+
+```bash
+python scripts/backfill-db.py
+python scripts/dedup-by-content.py
 ```

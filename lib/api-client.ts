@@ -79,6 +79,52 @@ export function streamEvaluation(
   return () => es.close();
 }
 
+export async function startQuickEvaluation(
+  jobText: string,
+  meta: Record<string, unknown>,
+): Promise<string> {
+  const data = await apiFetch<StartResp>("/api/evaluate-quick", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ async: true, jobText, meta }),
+  });
+  if (typeof data.jobId !== "string") {
+    throw new Error(data.error ?? "Konnte Quick-Cash Bewertung nicht starten.");
+  }
+  return data.jobId;
+}
+
+export async function pollQuickEvaluation(jobId: string): Promise<PollResp> {
+  return apiFetch<PollResp>(
+    `/api/evaluate-quick?jobId=${encodeURIComponent(jobId)}`,
+    { method: "GET" },
+  );
+}
+
+export function streamQuickEvaluation(
+  jobId: string,
+  onUpdate: (data: PollResp) => void,
+  onDone: () => void,
+): () => void {
+  const url = `/api/evaluate-quick/stream?jobId=${encodeURIComponent(jobId)}`;
+  const es = new EventSource(url);
+  es.onmessage = (e) => {
+    try {
+      const data = JSON.parse(e.data) as PollResp;
+      onUpdate(data);
+      if (data.status === "done" || data.status === "error") {
+        es.close();
+        onDone();
+      }
+    } catch { /* ignore parse errors */ }
+  };
+  es.onerror = () => {
+    es.close();
+    onDone();
+  };
+  return () => es.close();
+}
+
 export async function fetchFeed(url: string): Promise<ParsedJob[]> {
   const data = await apiFetch<{ jobs?: ParsedJob[]; error?: string }>("/api/feed", {
     method: "POST",

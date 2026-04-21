@@ -81,6 +81,32 @@ export const evaluationResultV2Schema = z.object({
   viable: val.viable_build_20h || val.viable_consulting,
 }));
 
+// ── Quick-Cash Schema ──
+
+export const evaluationResultQuickCashSchema = z.object({
+  reasoning: flexString,
+  quick_cash_score: z.union([z.number(), z.string()])
+    .transform((v) => {
+      const n = typeof v === "number" ? v : parseInt(String(v).trim().replace(",", "."), 10);
+      return Number.isFinite(n) ? Math.round(n) : -1;
+    })
+    .pipe(z.number().min(0).max(100)),
+  confidence: score1to10,
+  effort: flexString,
+  why: stringArray,
+  questions: stringArray,
+  proposal_de: flexString,
+  red_flags: stringArray,
+}).transform((val) => ({
+  ...val,
+  // Backward-compat fields for existing UI/history code paths
+  viable: val.quick_cash_score >= 70,
+  overall_score: Math.min(10, Math.max(1, Math.round(val.quick_cash_score / 10))),
+  effort_hours: val.effort,
+  steps: Array.isArray(val.why) ? val.why.slice(0, 8) : [],
+  risks: Array.isArray(val.red_flags) ? val.red_flags : [],
+}));
+
 // ── API Request Schemas ──
 
 export const parseRequestSchema = z.object({
@@ -99,3 +125,4 @@ export const evaluateRequestSchema = z.object({
 
 export type EvaluationResultV1Parsed = z.output<typeof evaluationResultV1Schema>;
 export type EvaluationResultV2Parsed = z.output<typeof evaluationResultV2Schema>;
+export type EvaluationResultQuickCashParsed = z.output<typeof evaluationResultQuickCashSchema>;

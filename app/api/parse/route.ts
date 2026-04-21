@@ -7,6 +7,37 @@ import { PER_JOB_MAX_CHARS } from "@/lib/constants";
 import { extractIp, isRateLimited } from "@/lib/rateLimit";
 import { parseRequestSchema } from "@/lib/schemas";
 import type { ParsedJob } from "@/types";
+import { extractUpworkJobId } from "@/lib/upwork-job-id";
+
+function extractUrlFromChunk(chunk: string): string | undefined {
+  const urlLine =
+    chunk.match(/(?:^|\n)\s*URL:\s*(https?:\/\/[^\s]+)\s*(?:\n|$)/i)?.[1]?.trim();
+  if (urlLine?.includes("upwork.com")) return urlLine;
+  const direct =
+    chunk.match(/https?:\/\/www\.upwork\.com\/jobs\/~\d{10,}/)?.[0]?.trim();
+  if (direct) return direct;
+  const id = extractUpworkJobId(chunk);
+  return id ? `https://www.upwork.com/jobs/~${id}` : undefined;
+}
+
+function extractTitleFromChunk(chunk: string): string | undefined {
+  const fromTitleLine =
+    chunk.match(/(?:^|\n)\s*TITLE:\s*(.+)\s*(?:\n|$)/i)?.[1]?.trim();
+  const candidate = (fromTitleLine || "")
+    .replace(/^\*+|\*+$/g, "")
+    .trim();
+  if (candidate.length >= 6) return candidate.slice(0, 180);
+
+  // Fallback: first non-empty line that isn't a metadata label
+  const lines = chunk
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const first = lines.find((l) => !/^(URL|POSTED|TYPE|LEVEL|DURATION|BUDGET|SKILLS|DESCRIPTION)\s*:/i.test(l));
+  if (!first) return undefined;
+  const cleaned = first.replace(/^\*+|\*+$/g, "").trim();
+  return cleaned.length >= 6 ? cleaned.slice(0, 180) : undefined;
+}
 
 function buildModelTextFromTile(tile: {
   title: string;
@@ -123,9 +154,19 @@ export async function POST(request: Request) {
   // 2) Fallback: bisherige Splits + Normalize
   const parts = splitJobPostings(raw);
   const jobs: ParsedJob[] = parts
-    .map((p) => normalizeJobText(p))
-    .filter((t) => t.length > 0)
-    .map((t) => ({ source: "text" as const, jobText: t }));
+    .map((chunk) => {
+      const jobUrl = extractUrlFromChunk(chunk);
+      const title = extractTitleFromChunk(chunk);
+      const jobText = normalizeJobText(chunk);
+      if (!jobText) return null;
+      return {
+        source: "text" as const,
+        title,
+        jobUrl,
+        jobText,
+      } satisfies ParsedJob;
+    })
+    .filter((x): x is ParsedJob => x !== null);
 
   if (jobs.length === 0) {
     return NextResponse.json(

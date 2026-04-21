@@ -7,7 +7,11 @@ const STORAGE_KEY = "upwork_seen_jobs";
 const STORAGE_KEY_UPWORK_IDS = "upwork_seen_job_ids";
 
 function normalizeForHash(text: string): string {
-  return text.toLowerCase().replace(/\s+/g, " ").trim();
+  // Remove URL metadata lines so minor URL variations don't change the hash.
+  const withoutUrlLines = text
+    .replace(/(?:^|\n)\s*URL:\s*https?:\/\/\S+\s*(?=\n|$)/gi, "")
+    .trim();
+  return withoutUrlLines.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
 function simpleHash(str: string): string {
@@ -85,16 +89,16 @@ async function postServerSeen(entries: Array<{ hash: string; upworkJobId?: strin
 export function useSeenJobs() {
   const [seenHashes, setSeenHashes] = useState<Set<string>>(new Set());
   const [seenUpworkIds, setSeenUpworkIds] = useState<Set<string>>(new Set());
+  const [ready, setReady] = useState(false);
 
-  useEffect(() => {
+  const refresh = useCallback(async (): Promise<void> => {
     const localHashes = readHashStore();
     const localIds = readUpworkIdStore();
     setSeenHashes(localHashes);
     setSeenUpworkIds(localIds);
 
-    fetchServerSeen().then((server) => {
-      if (!server) return;
-
+    const server = await fetchServerSeen();
+    if (server) {
       setSeenHashes((prev) => {
         const merged = new Set(prev);
         let changed = false;
@@ -114,7 +118,13 @@ export function useSeenJobs() {
         if (changed) writeUpworkIdStore(merged);
         return changed ? merged : prev;
       });
-    });
+    }
+
+    setReady(true);
+  }, []);
+
+  useEffect(() => {
+    void refresh();
   }, []);
 
   const isSeen = useCallback((jobText: string, jobUrl?: string): boolean => {
@@ -122,6 +132,9 @@ export function useSeenJobs() {
       const upworkId = extractUpworkJobId(jobUrl);
       if (upworkId && seenUpworkIds.has(upworkId)) return true;
     }
+    // Fallback: if jobUrl is missing, try extracting Upwork ID from the text itself
+    const textId = extractUpworkJobId(jobText);
+    if (textId && seenUpworkIds.has(textId)) return true;
     return seenHashes.has(jobTextHash(jobText));
   }, [seenHashes, seenUpworkIds]);
 
@@ -134,7 +147,9 @@ export function useSeenJobs() {
     for (const job of jobs) {
       const hash = jobTextHash(job.jobText);
       newHashes.push(hash);
-      const upworkId = job.jobUrl ? extractUpworkJobId(job.jobUrl) : undefined;
+      const upworkId =
+        (job.jobUrl ? extractUpworkJobId(job.jobUrl) : undefined) ??
+        extractUpworkJobId(job.jobText);
       if (upworkId) newUpworkIds.push(upworkId);
       serverEntries.push({ hash, upworkJobId: upworkId });
     }
@@ -167,5 +182,5 @@ export function useSeenJobs() {
     } catch { /* ok */ }
   }, []);
 
-  return { isSeen, markSeen, clearSeen, seenCount: seenHashes.size };
+  return { isSeen, markSeen, clearSeen, refresh, ready, seenCount: seenHashes.size };
 }

@@ -1,4 +1,4 @@
-import { parseEvaluationResultV2 } from "@/lib/parseEvaluationResult";
+import { parseEvaluationResultV2, parseEvaluationResultQuickCash } from "@/lib/parseEvaluationResult";
 import {
   MIN_RISKS,
   MIN_NEXT_STEPS,
@@ -170,5 +170,59 @@ export function validateResultDetailed(parsed: unknown): {
 
 export function validateResult(parsed: unknown): ReturnType<typeof parseEvaluationResultV2> {
   const detailed = validateResultDetailed(parsed);
+  return detailed.ok ? detailed.result : null;
+}
+
+export function validateQuickCashResultDetailed(parsed: unknown): {
+  ok: true;
+  result: NonNullable<ReturnType<typeof parseEvaluationResultQuickCash>>;
+} | {
+  ok: false;
+  errors: string[];
+} {
+  const result = parseEvaluationResultQuickCash(parsed);
+  if (!result) {
+    return { ok: false, errors: ["JSON konnte nicht als gültiges Quick-Cash Schema geparst werden."] };
+  }
+
+  const errors: string[] = [];
+
+  if (typeof result.quick_cash_score !== "number" || result.quick_cash_score < 0 || result.quick_cash_score > 100) {
+    errors.push("quick_cash_score muss 0..100 sein.");
+  }
+
+  if (!Array.isArray(result.why) || result.why.length < 1) {
+    errors.push("why muss mindestens 1 Punkt enthalten.");
+  }
+  if (!Array.isArray(result.questions) || result.questions.length < 2) {
+    errors.push("questions muss mindestens 2 Fragen enthalten.");
+  }
+  if (typeof result.proposal_de !== "string" || result.proposal_de.trim().length < 120) {
+    errors.push("proposal_de ist zu kurz (min. 120 Zeichen).");
+  }
+  if (typeof result.reasoning !== "string" || result.reasoning.trim().length < MIN_REASONING_LENGTH) {
+    errors.push(`reasoning zu kurz (${result.reasoning?.trim().length ?? 0} statt min. ${MIN_REASONING_LENGTH} Zeichen).`);
+  }
+  if (hasBadPlaceholders({ effort_hours: result.effort, risks: result.red_flags, steps: result.why, reasoning: result.reasoning })) {
+    errors.push("Enthält Platzhalter wie 'N/A' oder 'nicht anwendbar'.");
+  }
+
+  const germanText = [result.reasoning, result.proposal_de, ...result.why, ...result.questions, ...result.red_flags].join("\n");
+  if (!isLikelyGerman(germanText)) {
+    errors.push("Texte sind nicht auf Deutsch verfasst.");
+  }
+
+  // Ensure backward-compat fields exist and are reasonable
+  if (!Array.isArray(result.risks) || result.risks.length !== result.red_flags.length) {
+    // not fatal, but indicates bad transform
+    errors.push("Interner Fehler: risks mapping stimmt nicht.");
+  }
+
+  if (errors.length > 0) return { ok: false, errors };
+  return { ok: true, result };
+}
+
+export function validateQuickCashResult(parsed: unknown): ReturnType<typeof parseEvaluationResultQuickCash> {
+  const detailed = validateQuickCashResultDetailed(parsed);
   return detailed.ok ? detailed.result : null;
 }

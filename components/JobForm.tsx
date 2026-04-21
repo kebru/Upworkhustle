@@ -4,9 +4,10 @@ import { useState } from "react";
 import type { JobType } from "@/lib/eval-prompts";
 
 const JOB_TYPES: JobType[] = ["Automatisch", "Web Development", "Data & ML", "Design", "Consulting"];
+type EvalMode = "sidehustle" | "quick_cash";
 
 type Props = {
-  onSubmit: (text: string, jobType: JobType, offerTemplateId?: string) => void;
+  onSubmit: (text: string, jobType: JobType, offerTemplateId: string | undefined, mode: EvalMode) => void;
   loading: boolean;
   offerTemplates?: { id: string; name: string }[];
   value: string;
@@ -18,6 +19,7 @@ export function JobForm({ onSubmit, loading, offerTemplates, value, onChange }: 
   const setJobText = onChange;
   const [jobType, setJobType] = useState<JobType>("Automatisch");
   const [templateId, setTemplateId] = useState<string>("");
+  const [mode, setMode] = useState<EvalMode>("sidehustle");
 
   function handleJobPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
     const html = e.clipboardData.getData("text/html");
@@ -44,7 +46,7 @@ export function JobForm({ onSubmit, loading, offerTemplates, value, onChange }: 
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    onSubmit(jobText, jobType, templateId || undefined);
+    onSubmit(jobText, jobType, templateId || undefined, mode);
   }
 
   return (
@@ -76,18 +78,31 @@ export function JobForm({ onSubmit, loading, offerTemplates, value, onChange }: 
       <form onSubmit={handleSubmit} className="space-y-4">
         <div className="flex flex-wrap gap-3">
           <div>
+            <label htmlFor="mode" className="mb-1 block text-xs font-medium text-muted">Modus</label>
+            <select
+              id="mode"
+              value={mode}
+              onChange={(e) => setMode(e.target.value as EvalMode)}
+              disabled={loading}
+              className="rounded-md border border-white/15 bg-surface px-3 py-2 text-sm text-white outline-none focus:ring-1 focus:ring-accent"
+            >
+              <option value="sidehustle">Sidehustle</option>
+              <option value="quick_cash">Quick Cash</option>
+            </select>
+          </div>
+          <div>
             <label htmlFor="jobType" className="mb-1 block text-xs font-medium text-muted">Job-Typ</label>
             <select
               id="jobType"
               value={jobType}
               onChange={(e) => setJobType(e.target.value as JobType)}
-              disabled={loading}
+              disabled={loading || mode === "quick_cash"}
               className="rounded-md border border-white/15 bg-surface px-3 py-2 text-sm text-white outline-none focus:ring-1 focus:ring-accent"
             >
               {JOB_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
             </select>
           </div>
-          {offerTemplates && offerTemplates.length > 0 && (
+          {mode !== "quick_cash" && offerTemplates && offerTemplates.length > 0 && (
             <div>
               <label htmlFor="offerTpl" className="mb-1 block text-xs font-medium text-muted">Angebotsvorlage</label>
               <select
@@ -118,7 +133,7 @@ export function JobForm({ onSubmit, loading, offerTemplates, value, onChange }: 
             onKeyDown={(e) => {
               if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && !loading && jobText.trim()) {
                 e.preventDefault();
-                onSubmit(jobText, jobType, templateId || undefined);
+                onSubmit(jobText, jobType, templateId || undefined, mode);
               }
             }}
             rows={18}

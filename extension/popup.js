@@ -1,5 +1,6 @@
 const extractBtn = document.getElementById("extractBtn");
 const feedBtn = document.getElementById("feedBtn");
+const searchQuickBtn = document.getElementById("searchQuickBtn");
 const statusEl = document.getElementById("status");
 const jobCountEl = document.getElementById("jobCount");
 const serverUrlInput = document.getElementById("serverUrl");
@@ -74,12 +75,22 @@ async function executeInTab(tabId, file) {
 extractBtn.addEventListener("click", async () => {
   extractBtn.disabled = true;
   feedBtn.disabled = true;
+  searchQuickBtn.disabled = true;
   showStatus("Extrahiere...", "info");
 
   try {
     const tab = await getActiveTab();
     if (!tab?.url?.includes("upwork.com")) {
       showStatus("Bitte eine Upwork-Seite öffnen.", "err");
+      return;
+    }
+    // Upwork uses /nx/find-work/... both for the feed AND for job detail sliders/modals:
+    // e.g. /nx/find-work/.../details/~<id>?_modalInfo=...
+    // We only block true feed pages, but allow detail URLs that contain /details/~<id>.
+    const isNxFindWork = tab.url.includes("/nx/find-work/");
+    const isJobDetailModal = /\/details\/~\d{10,}/.test(tab.url);
+    if (isNxFindWork && !isJobDetailModal) {
+      showStatus("Du bist im Feed. Bitte 'Feed-Seite extrahieren' nutzen oder einen Job öffnen (Detailseite).", "err");
       return;
     }
 
@@ -100,12 +111,14 @@ extractBtn.addEventListener("click", async () => {
   } finally {
     extractBtn.disabled = false;
     feedBtn.disabled = false;
+    searchQuickBtn.disabled = false;
   }
 });
 
 feedBtn.addEventListener("click", async () => {
   extractBtn.disabled = true;
   feedBtn.disabled = true;
+  searchQuickBtn.disabled = true;
   showStatus("Extrahiere Feed...", "info");
 
   try {
@@ -150,5 +163,60 @@ feedBtn.addEventListener("click", async () => {
   } finally {
     extractBtn.disabled = false;
     feedBtn.disabled = false;
+    searchQuickBtn.disabled = false;
+  }
+});
+
+searchQuickBtn.addEventListener("click", async () => {
+  extractBtn.disabled = true;
+  feedBtn.disabled = true;
+  searchQuickBtn.disabled = true;
+  showStatus("Extrahiere Search Jobs...", "info");
+
+  try {
+    const tab = await getActiveTab();
+    if (!tab?.url?.includes("upwork.com")) {
+      showStatus("Bitte eine Upwork-Seite öffnen.", "err");
+      return;
+    }
+    if (!tab.url.includes("/nx/search/jobs")) {
+      showStatus("Bitte eine Upwork Search Jobs Seite öffnen (/nx/search/jobs).", "err");
+      return;
+    }
+
+    const data = await executeInTab(tab.id, "extract-feed.js");
+    if (!data?.jobs?.length) {
+      showStatus("Keine Jobs auf der Search-Seite gefunden.", "err");
+      return;
+    }
+
+    showJobCount(data.count);
+    showStatus("Öffne App (Quick Cash)...", "info");
+
+    const jobText = data.jobs.map((j) => j.jobText).join("\n---JOBSPLIT---\n");
+    const param = encodeURIComponent(jobText);
+
+    if (param.length > 50000) {
+      const res = await fetch(`${getServerUrl()}/api/extension/pending`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jobText }),
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok || !payload?.id) {
+        throw new Error(payload?.error || "Konnte Payload nicht an Server senden.");
+      }
+      chrome.tabs.create({ url: `${getServerUrl()}?autoEvalId=${encodeURIComponent(payload.id)}&mode=quick_cash` });
+    } else {
+      chrome.tabs.create({ url: `${getServerUrl()}?autoEval=${param}&mode=quick_cash` });
+    }
+
+    showStatus(`${data.count} Jobs gesendet (Quick Cash)!`, "ok");
+  } catch (err) {
+    showStatus(err.message || "Fehler beim Extrahieren.", "err");
+  } finally {
+    extractBtn.disabled = false;
+    feedBtn.disabled = false;
+    searchQuickBtn.disabled = false;
   }
 });

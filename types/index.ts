@@ -55,7 +55,33 @@ export interface EvaluationResultV2 {
   steps: string[];
 }
 
-export type EvaluationResultAny = EvaluationResult | EvaluationResultV2;
+export interface EvaluationResultQuickCash {
+  /**
+   * Quick-Cash Mode: Fokus auf sehr kleine, schnell lieferbare Jobs.
+   * Output ist bewusst anders als V2-Sidehustle.
+   */
+  quick_cash_score: number; // 0..100
+  confidence: number; // 1..10
+  effort: string; // z.B. "2-4h" / "1 Tag"
+  /** Backward-compat for existing UI components. */
+  effort_hours: string;
+  why: string[]; // 1-4
+  questions: string[]; // 2-6
+  proposal_de: string; // direkt nutzbarer Proposal-Text (DE)
+  red_flags: string[]; // 0-6
+  reasoning: string;
+
+  /** Backward-compat for UI/history filtering. */
+  viable: boolean;
+  /** Keep old field name used in UI badges. */
+  overall_score: number; // 1..10 (rough mapping)
+  /** Backward-compat: steps list to render something useful. */
+  steps: string[];
+  /** Backward-compat: risks list maps to red_flags. */
+  risks: string[];
+}
+
+export type EvaluationResultAny = EvaluationResult | EvaluationResultV2 | EvaluationResultQuickCash;
 
 export interface SavedEvaluation {
   id: string;

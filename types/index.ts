@@ -83,6 +83,8 @@ export interface EvaluationResultQuickCash {
 
 export type EvaluationResultAny = EvaluationResult | EvaluationResultV2 | EvaluationResultQuickCash;
 
+export type EvalMode = "sidehustle" | "quick_cash";
+
 export interface SavedEvaluation {
   id: string;
   savedAt: string;

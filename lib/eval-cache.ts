@@ -1,3 +1,5 @@
+import { createHash } from "crypto";
+
 type CacheEntry = {
   result: unknown;
   jobTextUsed: string;
@@ -8,13 +10,8 @@ type CacheEntry = {
 const CACHE_TTL_MS = 60 * 60 * 1000;
 const cache = new Map<string, CacheEntry>();
 
-function simpleHash(str: string): string {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash = ((hash << 5) - hash + char) | 0;
-  }
-  return hash.toString(36);
+function sha256Hex(str: string): string {
+  return createHash("sha256").update(str).digest("hex").slice(0, 16);
 }
 
 function normalizeForCache(text: string): string {
@@ -22,11 +19,11 @@ function normalizeForCache(text: string): string {
 }
 
 export function jobTextHash(jobText: string): string {
-  return simpleHash(normalizeForCache(jobText));
+  return sha256Hex(normalizeForCache(jobText));
 }
 
 function makeKey(jobText: string, namespace: string): string {
-  return simpleHash(`${namespace}:${normalizeForCache(jobText)}`);
+  return sha256Hex(`${namespace}:${normalizeForCache(jobText)}`);
 }
 
 export function getCached(jobText: string, namespace = "sidehustle"): CacheEntry | null {

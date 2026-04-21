@@ -11,7 +11,7 @@ import { useSeenJobs } from "@/hooks/useSeenJobs";
 import { normalizeJobText } from "@/lib/normalizeJobInput";
 import { splitJobPostings } from "@/lib/splitJobs";
 import { extractUpworkJobId } from "@/lib/upwork-job-id";
-import { parseJobs, startEvaluation, pollEvaluation, streamEvaluation, startQuickEvaluation, pollQuickEvaluation, streamQuickEvaluation } from "@/lib/api-client";
+import { parseJobs, startEval, pollEval, streamEval } from "@/lib/api-client";
 import type { PollResp } from "@/lib/api-client";
 import { POLL_INTERVAL_MS, POLL_TIMEOUT_MS, CONCURRENCY } from "@/lib/constants";
 import type { EvaluationResultAny, ParsedJob } from "@/types";
@@ -199,8 +199,8 @@ function HomePage() {
         );
 
         const run = initialRuns[i];
-        const startFn = run.mode === "quick_cash" ? startQuickEvaluation : startEvaluation;
-        const jobId = await startFn(run.jobText, {
+        const runMode = run.mode ?? "sidehustle";
+        const jobId = await startEval(runMode, run.jobText, {
           mode: run.mode,
           source: run.source,
           feedHasMoreToggle: run.feedHasMoreToggle,
@@ -255,8 +255,7 @@ function HomePage() {
           const timer = createForegroundTimer();
           await new Promise<void>((resolve) => {
             let fallbackTriggered = false;
-            const streamFn = run.mode === "quick_cash" ? streamQuickEvaluation : streamEvaluation;
-            const unsub = streamFn(jobId, (data) => {
+            const unsub = streamEval(runMode, jobId, (data) => {
               if (applyResult(data)) { timer.dispose(); resolve(); }
             }, () => {
               if (!fallbackTriggered) {
@@ -282,10 +281,9 @@ function HomePage() {
 
         // Polling fallback — only count foreground time, poll immediately on tab focus
         const timer = createForegroundTimer();
-        const pollFn = run.mode === "quick_cash" ? pollQuickEvaluation : pollEvaluation;
         while (timer.foregroundMs() < POLL_TIMEOUT_MS) {
           await waitForVisible();
-          const p = await pollFn(jobId);
+          const p = await pollEval(runMode, jobId);
           if (applyResult(p)) { timer.dispose(); return; }
           await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
         }
@@ -409,23 +407,22 @@ function HomePage() {
       prev.map((r, j) => (j === index ? { ...r, status: "loading" as const, error: undefined } : r)),
     );
     try {
-      const startFn = run.mode === "quick_cash" ? startQuickEvaluation : startEvaluation;
-      const jobId = await startFn(run.jobText, {
-        mode: run.mode,
+      const retryMode = run.mode ?? "sidehustle";
+      const jobId = await startEval(retryMode, run.jobText, {
+        mode: retryMode,
         source: run.source,
         title: run.title,
         jobUrl: run.jobUrl,
-      }, run.mode === "quick_cash"
+      }, retryMode === "quick_cash"
         ? undefined
         : { jobType: currentJobType !== "Automatisch" ? currentJobType : undefined, offerTemplate: currentOfferTemplate });
       setRuns((prev) =>
         prev.map((r, j) => (j === index ? { ...r, evaluationJobId: jobId } : r)),
       );
       const retryTimer = createForegroundTimer();
-      const pollFn = run.mode === "quick_cash" ? pollQuickEvaluation : pollEvaluation;
       while (retryTimer.foregroundMs() < POLL_TIMEOUT_MS) {
         await waitForVisible();
-        const p = await pollFn(jobId);
+        const p = await pollEval(retryMode, jobId);
         if (p.status === "done" && p.result) {
           markSeen([{ jobText: run.jobText, jobUrl: run.jobUrl }]);
           setRuns((prev) =>

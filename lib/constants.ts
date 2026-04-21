@@ -45,6 +45,10 @@ export const MIN_OFFER_MESSAGE_LENGTH = 80;
 export const MAX_OFFER_MESSAGE_LENGTH = 1200;
 export const MIN_REASONING_LENGTH = 20;
 
+// ── Async Job Management ──
+export const EVAL_JOB_TTL_MS = 10 * 60 * 1_000;
+export const EVAL_JOB_GC_INTERVAL_MS = 5 * 60 * 1_000;
+
 // ── Rate Limiting ──
 export const RATE_LIMIT_WINDOW_MS = 60_000;
 export const RATE_LIMIT_MAX_REQUESTS = 10;

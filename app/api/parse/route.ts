@@ -154,7 +154,7 @@ export async function POST(request: Request) {
   // 2) Fallback: bisherige Splits + Normalize
   const parts = splitJobPostings(raw);
   const jobs: ParsedJob[] = parts
-    .map((chunk) => {
+    .map((chunk): ParsedJob | null => {
       const jobUrl = extractUrlFromChunk(chunk);
       const title = extractTitleFromChunk(chunk);
       const jobText = normalizeJobText(chunk);
@@ -164,7 +164,7 @@ export async function POST(request: Request) {
         title,
         jobUrl,
         jobText,
-      } satisfies ParsedJob;
+      };
     })
     .filter((x): x is ParsedJob => x !== null);
 

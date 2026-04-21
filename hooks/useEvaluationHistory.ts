@@ -140,6 +140,7 @@ export function useEvaluationHistory() {
   type SaveInput = {
     jobSnippet: string;
     evaluation: EvaluationResultAny;
+    tags?: string[];
     title?: string;
     jobUrl?: string;
     upworkJobId?: string;
@@ -159,6 +160,7 @@ export function useEvaluationHistory() {
         savedAt: new Date().toISOString(),
         jobSnippet: entry.jobSnippet,
         evaluation: entry.evaluation,
+        tags: entry.tags,
         title: entry.title,
         jobUrl: entry.jobUrl,
         upworkJobId: entry.upworkJobId,
@@ -198,6 +200,7 @@ export function useEvaluationHistory() {
         savedAt: now,
         jobSnippet: entry.jobSnippet,
         evaluation: entry.evaluation,
+        tags: entry.tags,
         title: entry.title,
         jobUrl: entry.jobUrl,
         upworkJobId: entry.upworkJobId,

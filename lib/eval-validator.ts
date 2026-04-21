@@ -197,8 +197,8 @@ export function validateQuickCashResultDetailed(parsed: unknown): {
   if (!Array.isArray(result.questions) || result.questions.length < 2) {
     errors.push("questions muss mindestens 2 Fragen enthalten.");
   }
-  if (typeof result.proposal_de !== "string" || result.proposal_de.trim().length < 120) {
-    errors.push("proposal_de ist zu kurz (min. 120 Zeichen).");
+  if (typeof result.proposal_de !== "string" || result.proposal_de.trim().length < 80) {
+    errors.push("proposal_de ist zu kurz (min. 80 Zeichen).");
   }
   if (typeof result.reasoning !== "string" || result.reasoning.trim().length < MIN_REASONING_LENGTH) {
     errors.push(`reasoning zu kurz (${result.reasoning?.trim().length ?? 0} statt min. ${MIN_REASONING_LENGTH} Zeichen).`);

@@ -12,7 +12,7 @@ const TTL_MS = 10 * 60 * 1000;
 
 function gc() {
   const cutoff = Date.now() - TTL_MS;
-  for (const [id, rec] of store.entries()) {
+  for (const [id, rec] of Array.from(store.entries())) {
     if (rec.createdAt < cutoff) store.delete(id);
   }
 }

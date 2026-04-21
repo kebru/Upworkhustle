@@ -115,7 +115,9 @@ export function extractUpworkFeedTiles(html: string): UpworkFeedJobItem[] | null
       cleanText(tile.find('[data-test="posted-on"]').first().text()) ||
       cleanText(tile.find('[data-test="job-pubilshed-date"]').first().text());
 
-    const jobType = cleanText(tile.find('[data-test="job-type"]').first().text());
+    const jobType =
+      cleanText(tile.find('[data-test="job-type"]').first().text()) ||
+      cleanText(tile.find('[data-test="job-type-label"]').first().text());
     const budget =
       cleanText(tile.find('[data-test="budget"]').first().text()) ||
       cleanText(tile.find('[data-test="is-fixed-price"]').first().text());

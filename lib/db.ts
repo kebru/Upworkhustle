@@ -52,7 +52,7 @@ function warnOnce(msg: string, extra?: unknown) {
 function tryLoadSqlite(): SqliteDb | null {
   try {
     // IMPORTANT: lazy-load so native addon errors don't crash the whole server bundle.
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    // eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-require-imports
     const Database = require("better-sqlite3") as new (filename: string) => SqliteDb;
 
     const dir = path.dirname(DB_PATH);
@@ -275,7 +275,7 @@ export function dbInsertMany(entries: SavedEvaluation[]): void {
 export function dbFindByUpworkJobId(upworkJobId: string): SavedEvaluation | undefined {
   ensureBackend();
   if (_mode === "memory") {
-    for (const e of memEvaluations.values()) {
+    for (const e of Array.from(memEvaluations.values())) {
       if (e.upworkJobId && e.upworkJobId === upworkJobId) return e;
     }
     return undefined;
@@ -387,7 +387,7 @@ export function dbGetAllSeenUpworkJobIds(): string[] {
   ensureBackend();
   if (_mode === "memory") {
     const out = new Set<string>();
-    for (const v of memSeenByHash.values()) {
+    for (const v of Array.from(memSeenByHash.values())) {
       if (v.upworkJobId) out.add(v.upworkJobId);
     }
     return Array.from(out);
@@ -402,7 +402,7 @@ export function dbGetAllEvaluationUpworkJobIds(): string[] {
   ensureBackend();
   if (_mode === "memory") {
     const out = new Set<string>();
-    for (const e of memEvaluations.values()) {
+    for (const e of Array.from(memEvaluations.values())) {
       if (e.upworkJobId) out.add(e.upworkJobId);
     }
     return Array.from(out);

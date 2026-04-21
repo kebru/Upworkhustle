@@ -1,5 +1,6 @@
-import type { ParsedJob, EvaluationResultAny } from "@/types";
+import type { ParsedJob, EvaluationResultAny, EvalMode } from "@/types";
 
+export type { EvalMode };
 export type StartResp = { jobId?: string; error?: string };
 export type PollResp = {
   jobId: string;
@@ -20,6 +21,10 @@ async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
   return data as T;
 }
 
+function evalEndpoint(mode: EvalMode): string {
+  return mode === "quick_cash" ? "/api/evaluate-quick" : "/api/evaluate";
+}
+
 export async function parseJobs(rawText: string): Promise<ParsedJob[]> {
   const data = await apiFetch<{ jobs?: ParsedJob[]; error?: string }>("/api/parse", {
     method: "POST",
@@ -32,12 +37,13 @@ export async function parseJobs(rawText: string): Promise<ParsedJob[]> {
   return data.jobs;
 }
 
-export async function startEvaluation(
+export async function startEval(
+  mode: EvalMode,
   jobText: string,
   meta: Record<string, unknown>,
   options?: { jobType?: string; offerTemplate?: string },
 ): Promise<string> {
-  const data = await apiFetch<StartResp>("/api/evaluate", {
+  const data = await apiFetch<StartResp>(evalEndpoint(mode), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ async: true, jobText, meta, jobType: options?.jobType, offerTemplate: options?.offerTemplate }),
@@ -48,65 +54,20 @@ export async function startEvaluation(
   return data.jobId;
 }
 
-export async function pollEvaluation(jobId: string): Promise<PollResp> {
+export async function pollEval(mode: EvalMode, jobId: string): Promise<PollResp> {
   return apiFetch<PollResp>(
-    `/api/evaluate?jobId=${encodeURIComponent(jobId)}`,
+    `${evalEndpoint(mode)}?jobId=${encodeURIComponent(jobId)}`,
     { method: "GET" },
   );
 }
 
-export function streamEvaluation(
+export function streamEval(
+  mode: EvalMode,
   jobId: string,
   onUpdate: (data: PollResp) => void,
   onDone: () => void,
 ): () => void {
-  const url = `/api/evaluate/stream?jobId=${encodeURIComponent(jobId)}`;
-  const es = new EventSource(url);
-  es.onmessage = (e) => {
-    try {
-      const data = JSON.parse(e.data) as PollResp;
-      onUpdate(data);
-      if (data.status === "done" || data.status === "error") {
-        es.close();
-        onDone();
-      }
-    } catch { /* ignore parse errors */ }
-  };
-  es.onerror = () => {
-    es.close();
-    onDone();
-  };
-  return () => es.close();
-}
-
-export async function startQuickEvaluation(
-  jobText: string,
-  meta: Record<string, unknown>,
-): Promise<string> {
-  const data = await apiFetch<StartResp>("/api/evaluate-quick", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ async: true, jobText, meta }),
-  });
-  if (typeof data.jobId !== "string") {
-    throw new Error(data.error ?? "Konnte Quick-Cash Bewertung nicht starten.");
-  }
-  return data.jobId;
-}
-
-export async function pollQuickEvaluation(jobId: string): Promise<PollResp> {
-  return apiFetch<PollResp>(
-    `/api/evaluate-quick?jobId=${encodeURIComponent(jobId)}`,
-    { method: "GET" },
-  );
-}
-
-export function streamQuickEvaluation(
-  jobId: string,
-  onUpdate: (data: PollResp) => void,
-  onDone: () => void,
-): () => void {
-  const url = `/api/evaluate-quick/stream?jobId=${encodeURIComponent(jobId)}`;
+  const url = `${evalEndpoint(mode)}/stream?jobId=${encodeURIComponent(jobId)}`;
   const es = new EventSource(url);
   es.onmessage = (e) => {
     try {

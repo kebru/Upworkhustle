@@ -132,6 +132,11 @@ export function createEvalEngine(config: EvalEngineConfig) {
   const evalJobs = getOrCreateJobStore(config.globalStoreKey);
   ensureGc(config.globalStoreKey, `${config.globalStoreKey}__gc`);
 
+  // If an async job finishes extremely quickly (e.g. immediate provider failure),
+  // a second POST with identical text can arrive after status flips to done/error.
+  // Dedup those very-recent completions to avoid duplicate evaluations and flaky UX.
+  const RECENT_COMPLETION_DEDUP_MS = 5_000;
+
   const llmParams = {
     temperature: LLM_TEMPERATURE,
     max_tokens: LLM_MAX_TOKENS,
@@ -410,7 +415,12 @@ export function createEvalEngine(config: EvalEngineConfig) {
         const textHash = jobTextHash(jobText);
         let existingJobId: string | null = null;
         evalJobs.forEach((rec, id) => {
-          if (!existingJobId && (rec.status === "queued" || rec.status === "running")) {
+          if (existingJobId) return;
+          const inFlight = rec.status === "queued" || rec.status === "running";
+          const recentlyCompleted =
+            (rec.status === "done" || rec.status === "error") &&
+            Date.now() - rec.updatedAt <= RECENT_COMPLETION_DEDUP_MS;
+          if (inFlight || recentlyCompleted) {
             const recHash = rec.jobTextUsed ? jobTextHash(rec.jobTextUsed) : null;
             if (recHash === textHash) existingJobId = id;
           }

@@ -25,9 +25,9 @@ export const ASYNC_MIN_REQUEST_TIMEOUT_MS = 5_000;
 export const ASYNC_MAX_REQUEST_TIMEOUT_MS = 60_000;
 
 // ── LLM Models ──
-export const PRIMARY_MODEL_DEFAULT = "google/gemini-2.5-pro-preview";
-export const FALLBACK_MODEL_DEFAULT = "openai/gpt-4.1-mini";
-export const OFFER_MODEL_DEFAULT = "anthropic/claude-sonnet-4-20250514";
+export const PRIMARY_MODEL_DEFAULT = "google/gemini-3-flash-preview";
+export const FALLBACK_MODEL_DEFAULT = "openai/gpt-5.4-mini";
+export const OFFER_MODEL_DEFAULT = "anthropic/claude-sonnet-4-6";
 
 // ── LLM Parameters ──
 export const LLM_TEMPERATURE = 0.3;

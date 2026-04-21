@@ -2,6 +2,12 @@
 const nextConfig = {
   output: "standalone",
   poweredByHeader: false,
+  webpack: (config, { dev }) => {
+    // In dev, filesystem cache can get into a broken state after deleting `.next`,
+    // causing noisy ENOENT warnings about `.next/server/app/api/*`. Disable it.
+    if (dev) config.cache = false;
+    return config;
+  },
   headers: async () => [
     {
       source: "/(.*)",

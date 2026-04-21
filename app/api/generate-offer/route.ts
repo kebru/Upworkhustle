@@ -70,6 +70,10 @@ export async function POST(req: NextRequest) {
   }
 
   const model = process.env.OPENROUTER_OFFER_MODEL || OFFER_MODEL_DEFAULT;
+  const fallbackModel =
+    process.env.OPENROUTER_MODEL_FALLBACK ||
+    process.env.OPENROUTER_MODEL_PRIMARY ||
+    model;
   const messages = buildOfferPrompt({
     jobText,
     evaluation: evaluation as unknown as Parameters<typeof buildOfferPrompt>[0]["evaluation"],
@@ -86,6 +90,24 @@ export async function POST(req: NextRequest) {
     timeoutMs: 30_000,
     llmParams: { temperature: 0.5, max_tokens: 2048 },
   });
+
+  // If model ID is invalid (400), retry with a more generic fallback model.
+  if ((!result.ok || !result.content) && result.status === 400 && fallbackModel !== model) {
+    const retry = await openRouterChat({
+      apiKey,
+      model: fallbackModel,
+      messages,
+      timeoutMs: 30_000,
+      llmParams: { temperature: 0.5, max_tokens: 2048 },
+    });
+    if (!retry.ok || !retry.content) {
+      return NextResponse.json(
+        { error: retry.rawText ?? result.rawText ?? "LLM-Anfrage fehlgeschlagen." },
+        { status: 502 },
+      );
+    }
+    return NextResponse.json({ offerText: retry.content.trim() });
+  }
 
   if (!result.ok || !result.content) {
     return NextResponse.json(

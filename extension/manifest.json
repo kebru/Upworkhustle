@@ -3,8 +3,8 @@
   "name": "Upwork Job Evaluator",
   "version": "1.0.0",
   "description": "Extract Upwork jobs and send to local evaluator",
-  "permissions": ["activeTab", "scripting"],
-  "host_permissions": ["https://www.upwork.com/*"],
+  "permissions": ["activeTab", "scripting", "storage", "tabs"],
+  "host_permissions": ["https://www.upwork.com/*", "http://localhost/*", "http://127.0.0.1/*"],
   "action": {
     "default_popup": "popup.html",
     "default_icon": {

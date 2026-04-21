@@ -1,59 +1,110 @@
-import Database from "better-sqlite3";
 import path from "path";
 import fs from "fs";
 import type { SavedEvaluation, EvaluationResultAny } from "@/types";
 
 const DB_PATH = process.env.DB_PATH || path.join(process.cwd(), "data", "evaluations.db");
 
-let _db: Database.Database | null = null;
+type SqliteDb = {
+  pragma: (sql: string, opts?: { simple?: boolean }) => unknown;
+  exec: (sql: string) => void;
+  prepare: (sql: string) => {
+    all: (...params: unknown[]) => unknown[];
+    get: (...params: unknown[]) => unknown | undefined;
+    run: (...params: unknown[]) => unknown;
+  };
+  transaction: <TArgs extends unknown[]>(
+    fn: (...args: TArgs) => void,
+  ) => (...args: TArgs) => void;
+};
 
-function getDb(): Database.Database {
+let _db: SqliteDb | null = null;
+let _mode: "sqlite" | "memory" = "sqlite";
+let _warned = false;
+
+// In-memory fallback (Dev-friendly when native addon fails)
+const memEvaluations = new Map<string, SavedEvaluation>();
+const memSeenByHash = new Map<string, { upworkJobId?: string; seenAt: string }>();
+
+function warnOnce(msg: string, extra?: unknown) {
+  if (_warned) return;
+  _warned = true;
+  // eslint-disable-next-line no-console
+  console.warn(msg, extra ?? "");
+}
+
+function tryLoadSqlite(): SqliteDb | null {
+  try {
+    // IMPORTANT: lazy-load so native addon errors don't crash the whole server bundle.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const Database = require("better-sqlite3") as new (filename: string) => SqliteDb;
+
+    const dir = path.dirname(DB_PATH);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+
+    const db = new Database(DB_PATH);
+    db.pragma("journal_mode = WAL");
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS evaluations (
+        id TEXT PRIMARY KEY,
+        saved_at TEXT NOT NULL,
+        job_snippet TEXT NOT NULL,
+        evaluation TEXT NOT NULL,
+        tags TEXT DEFAULT '[]',
+        starred INTEGER DEFAULT 0
+      )
+    `);
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS seen_jobs (
+        hash TEXT PRIMARY KEY,
+        upwork_job_id TEXT,
+        seen_at TEXT NOT NULL
+      )
+    `);
+
+    const version = (db.pragma("user_version", { simple: true }) as number) ?? 0;
+    if (version < 1) {
+      db.exec(`
+        ALTER TABLE evaluations ADD COLUMN title TEXT;
+        ALTER TABLE evaluations ADD COLUMN job_url TEXT;
+        ALTER TABLE evaluations ADD COLUMN upwork_job_id TEXT;
+        ALTER TABLE evaluations ADD COLUMN budget TEXT;
+        ALTER TABLE evaluations ADD COLUMN duration TEXT;
+        ALTER TABLE evaluations ADD COLUMN skills TEXT DEFAULT '[]';
+        ALTER TABLE evaluations ADD COLUMN source TEXT;
+        CREATE INDEX IF NOT EXISTS idx_eval_upwork_job_id ON evaluations(upwork_job_id);
+        CREATE INDEX IF NOT EXISTS idx_seen_upwork_id ON seen_jobs(upwork_job_id);
+        PRAGMA user_version = 1;
+      `);
+    }
+
+    return db;
+  } catch (e) {
+    warnOnce(
+      "[db] better-sqlite3 konnte nicht geladen werden – fallback auf In-Memory Storage (Dev). " +
+        "Ursache ist meist ein Node-ABI-Mismatch. Fix: 'npm rebuild better-sqlite3' mit der Node-Version, die den Dev-Server startet.",
+      e,
+    );
+    return null;
+  }
+}
+
+function getDb(): SqliteDb {
   if (_db) return _db;
 
-  const dir = path.dirname(DB_PATH);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+  const loaded = tryLoadSqlite();
+  if (!loaded) {
+    _mode = "memory";
+    // Provide a tiny shim so callers that accidentally reach getDb() in memory mode explode loudly.
+    // We try to keep all exported functions from calling getDb() when _mode==="memory".
+    throw new Error("SQLite unavailable (memory fallback active).");
   }
-
-  _db = new Database(DB_PATH);
-  _db.pragma("journal_mode = WAL");
-
-  _db.exec(`
-    CREATE TABLE IF NOT EXISTS evaluations (
-      id TEXT PRIMARY KEY,
-      saved_at TEXT NOT NULL,
-      job_snippet TEXT NOT NULL,
-      evaluation TEXT NOT NULL,
-      tags TEXT DEFAULT '[]',
-      starred INTEGER DEFAULT 0
-    )
-  `);
-
-  _db.exec(`
-    CREATE TABLE IF NOT EXISTS seen_jobs (
-      hash TEXT PRIMARY KEY,
-      upwork_job_id TEXT,
-      seen_at TEXT NOT NULL
-    )
-  `);
-
-  const version = (_db.pragma("user_version", { simple: true }) as number) ?? 0;
-  if (version < 1) {
-    _db.exec(`
-      ALTER TABLE evaluations ADD COLUMN title TEXT;
-      ALTER TABLE evaluations ADD COLUMN job_url TEXT;
-      ALTER TABLE evaluations ADD COLUMN upwork_job_id TEXT;
-      ALTER TABLE evaluations ADD COLUMN budget TEXT;
-      ALTER TABLE evaluations ADD COLUMN duration TEXT;
-      ALTER TABLE evaluations ADD COLUMN skills TEXT DEFAULT '[]';
-      ALTER TABLE evaluations ADD COLUMN source TEXT;
-      CREATE INDEX IF NOT EXISTS idx_eval_upwork_job_id ON evaluations(upwork_job_id);
-      CREATE INDEX IF NOT EXISTS idx_seen_upwork_id ON seen_jobs(upwork_job_id);
-      PRAGMA user_version = 1;
-    `);
-  }
-
-  return _db;
+  _db = loaded;
+  _mode = "sqlite";
+  return loaded;
 }
 
 interface EvalRow {
@@ -95,6 +146,26 @@ export function dbGetAll(options?: {
   viable?: boolean;
   starred?: boolean;
 }): SavedEvaluation[] {
+  if (_mode === "memory") {
+    let entries = Array.from(memEvaluations.values());
+    entries.sort((a, b) => (a.savedAt < b.savedAt ? 1 : a.savedAt > b.savedAt ? -1 : 0));
+
+    if (options?.search) {
+      const q = options.search.toLowerCase();
+      entries = entries.filter((e) => {
+        const hay = `${e.jobSnippet ?? ""}\n${e.title ?? ""}`.toLowerCase();
+        return hay.includes(q);
+      });
+    }
+    if (options?.starred !== undefined) {
+      entries = entries.filter((e) => e.starred === options.starred);
+    }
+    if (options?.viable !== undefined) {
+      entries = entries.filter((e) => e.evaluation.viable === options.viable);
+    }
+    return entries;
+  }
+
   const db = getDb();
   let sql = "SELECT * FROM evaluations ORDER BY saved_at DESC";
   const params: unknown[] = [];
@@ -125,6 +196,8 @@ export function dbGetAll(options?: {
 }
 
 export function dbGetById(id: string): SavedEvaluation | undefined {
+  if (_mode === "memory") return memEvaluations.get(id);
+
   const db = getDb();
   const row = db.prepare("SELECT * FROM evaluations WHERE id = ?").get(id) as EvalRow | undefined;
   return row ? rowToEntry(row) : undefined;
@@ -145,11 +218,19 @@ function entryParams(e: SavedEvaluation) {
 }
 
 export function dbInsert(entry: SavedEvaluation): void {
+  if (_mode === "memory") {
+    memEvaluations.set(entry.id, entry);
+    return;
+  }
   const db = getDb();
   db.prepare(INSERT_SQL).run(...entryParams(entry));
 }
 
 export function dbInsertMany(entries: SavedEvaluation[]): void {
+  if (_mode === "memory") {
+    for (const e of entries) memEvaluations.set(e.id, e);
+    return;
+  }
   const db = getDb();
   const stmt = db.prepare(INSERT_SQL);
   const insertAll = db.transaction((items: SavedEvaluation[]) => {
@@ -159,6 +240,12 @@ export function dbInsertMany(entries: SavedEvaluation[]): void {
 }
 
 export function dbFindByUpworkJobId(upworkJobId: string): SavedEvaluation | undefined {
+  if (_mode === "memory") {
+    for (const e of memEvaluations.values()) {
+      if (e.upworkJobId && e.upworkJobId === upworkJobId) return e;
+    }
+    return undefined;
+  }
   const db = getDb();
   const row = db.prepare("SELECT * FROM evaluations WHERE upwork_job_id = ? LIMIT 1").get(upworkJobId) as EvalRow | undefined;
   return row ? rowToEntry(row) : undefined;
@@ -168,6 +255,16 @@ export function dbUpdate(
   id: string,
   patch: Partial<Pick<SavedEvaluation, "tags" | "starred">>,
 ): void {
+  if (_mode === "memory") {
+    const current = memEvaluations.get(id);
+    if (!current) return;
+    memEvaluations.set(id, {
+      ...current,
+      ...(patch.tags !== undefined ? { tags: patch.tags } : null),
+      ...(patch.starred !== undefined ? { starred: patch.starred } : null),
+    });
+    return;
+  }
   const db = getDb();
   const sets: string[] = [];
   const params: unknown[] = [];
@@ -187,12 +284,20 @@ export function dbUpdate(
 }
 
 export function dbDelete(id: string): void {
+  if (_mode === "memory") {
+    memEvaluations.delete(id);
+    return;
+  }
   const db = getDb();
   db.prepare("DELETE FROM evaluations WHERE id = ?").run(id);
 }
 
 export function dbDeleteMany(ids: string[]): void {
   if (ids.length === 0) return;
+  if (_mode === "memory") {
+    for (const id of ids) memEvaluations.delete(id);
+    return;
+  }
   const db = getDb();
   const placeholders = ids.map(() => "?").join(",");
   db.prepare(`DELETE FROM evaluations WHERE id IN (${placeholders})`).run(...ids);
@@ -202,6 +307,14 @@ export function dbDeleteMany(ids: string[]): void {
 
 export function dbMarkSeen(entries: Array<{ hash: string; upworkJobId?: string }>): void {
   if (entries.length === 0) return;
+  if (_mode === "memory") {
+    const now = new Date().toISOString();
+    for (const e of entries) {
+      if (memSeenByHash.has(e.hash)) continue;
+      memSeenByHash.set(e.hash, { upworkJobId: e.upworkJobId, seenAt: now });
+    }
+    return;
+  }
   const db = getDb();
   const stmt = db.prepare("INSERT OR IGNORE INTO seen_jobs (hash, upwork_job_id, seen_at) VALUES (?, ?, ?)");
   const now = new Date().toISOString();
@@ -212,12 +325,20 @@ export function dbMarkSeen(entries: Array<{ hash: string; upworkJobId?: string }
 }
 
 export function dbGetAllSeenHashes(): string[] {
+  if (_mode === "memory") return Array.from(memSeenByHash.keys());
   const db = getDb();
   const rows = db.prepare("SELECT hash FROM seen_jobs").all() as Array<{ hash: string }>;
   return rows.map((r) => r.hash);
 }
 
 export function dbGetAllSeenUpworkJobIds(): string[] {
+  if (_mode === "memory") {
+    const out = new Set<string>();
+    for (const v of memSeenByHash.values()) {
+      if (v.upworkJobId) out.add(v.upworkJobId);
+    }
+    return Array.from(out);
+  }
   const db = getDb();
   const rows = db.prepare("SELECT DISTINCT upwork_job_id FROM seen_jobs WHERE upwork_job_id IS NOT NULL").all() as Array<{ upwork_job_id: string }>;
   return rows.map((r) => r.upwork_job_id);

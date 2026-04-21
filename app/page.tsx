@@ -80,6 +80,7 @@ function HomePage() {
   const searchParams = useSearchParams();
   const autoEvalTriggered = useRef(false);
   const [loading, setLoading] = useState(false);
+  const [draftJobText, setDraftJobText] = useState("");
   const [runs, setRuns] = useState<JobRun[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [toastVisible, setToastVisible] = useState(false);
@@ -402,10 +403,35 @@ function HomePage() {
   useEffect(() => {
     if (autoEvalTriggered.current) return;
     const jobText = searchParams.get("autoEval");
-    if (!jobText || loading) return;
-    autoEvalTriggered.current = true;
-    window.history.replaceState({}, "", "/");
-    handleSubmit(jobText);
+    const autoEvalId = searchParams.get("autoEvalId");
+    if (loading) return;
+
+    if (jobText) {
+      autoEvalTriggered.current = true;
+      window.history.replaceState({}, "", "/");
+      setDraftJobText(jobText);
+      handleSubmit(jobText);
+      return;
+    }
+
+    if (autoEvalId) {
+      autoEvalTriggered.current = true;
+      window.history.replaceState({}, "", "/");
+      (async () => {
+        try {
+          const res = await fetch(`/api/extension/pending?id=${encodeURIComponent(autoEvalId)}`);
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || typeof data?.jobText !== "string") {
+            setError(typeof data?.error === "string" ? data.error : "Konnte Pending-Jobs nicht laden.");
+            return;
+          }
+          setDraftJobText(data.jobText);
+          handleSubmit(data.jobText);
+        } catch (e) {
+          setError(e && typeof e === "object" && "message" in e ? String((e as { message: unknown }).message) : "Konnte Pending-Jobs nicht laden.");
+        }
+      })();
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
@@ -421,7 +447,13 @@ function HomePage() {
 
   return (
     <div className="space-y-8">
-      <JobForm onSubmit={handleSubmit} loading={loading} offerTemplates={offerTemplates.map((t) => ({ id: t.id, name: t.name }))} />
+      <JobForm
+        onSubmit={handleSubmit}
+        loading={loading}
+        offerTemplates={offerTemplates.map((t) => ({ id: t.id, name: t.name }))}
+        value={draftJobText}
+        onChange={setDraftJobText}
+      />
       <FeedRefreshButton onNewJobs={handleFeedJobs} />
 
       {skippedCount > 0 && (

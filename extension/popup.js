@@ -6,12 +6,41 @@ const serverUrlInput = document.getElementById("serverUrl");
 
 const STORAGE_KEY = "upwork_eval_server_url";
 
-chrome.storage?.local?.get(STORAGE_KEY, (data) => {
-  if (data[STORAGE_KEY]) serverUrlInput.value = data[STORAGE_KEY];
+function hasChromeStorage() {
+  return typeof chrome !== "undefined" && !!chrome.storage && !!chrome.storage.local;
+}
+
+function storageGet(key) {
+  if (hasChromeStorage()) {
+    return new Promise((resolve) => chrome.storage.local.get(key, (data) => resolve(data?.[key])));
+  }
+  try {
+    return Promise.resolve(localStorage.getItem(key));
+  } catch {
+    return Promise.resolve(null);
+  }
+}
+
+function storageSet(obj) {
+  const key = Object.keys(obj)[0];
+  const val = obj[key];
+  if (hasChromeStorage()) {
+    return new Promise((resolve) => chrome.storage.local.set(obj, () => resolve(true)));
+  }
+  try {
+    localStorage.setItem(key, String(val));
+  } catch {
+    // ignore
+  }
+  return Promise.resolve(true);
+}
+
+storageGet(STORAGE_KEY).then((v) => {
+  if (typeof v === "string" && v.trim()) serverUrlInput.value = v;
 });
 
 serverUrlInput.addEventListener("change", () => {
-  chrome.storage?.local?.set({ [STORAGE_KEY]: serverUrlInput.value });
+  void storageSet({ [STORAGE_KEY]: serverUrlInput.value });
 });
 
 function getServerUrl() {
@@ -100,9 +129,17 @@ feedBtn.addEventListener("click", async () => {
 
     // URL length limit ~2MB in Chrome, but use POST fallback for large payloads
     if (param.length > 50000) {
-      // Store in extension storage, open app, app fetches via message
-      await chrome.storage.local.set({ pendingJobs: jobText });
-      chrome.tabs.create({ url: `${getServerUrl()}?autoEvalPending=1` });
+      // Store on local server to avoid URL limits
+      const res = await fetch(`${getServerUrl()}/api/extension/pending`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jobText }),
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok || !payload?.id) {
+        throw new Error(payload?.error || "Konnte Payload nicht an Server senden.");
+      }
+      chrome.tabs.create({ url: `${getServerUrl()}?autoEvalId=${encodeURIComponent(payload.id)}` });
     } else {
       chrome.tabs.create({ url: `${getServerUrl()}?autoEval=${param}` });
     }

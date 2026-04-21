@@ -9,10 +9,13 @@ type Props = {
   onSubmit: (text: string, jobType: JobType, offerTemplateId?: string) => void;
   loading: boolean;
   offerTemplates?: { id: string; name: string }[];
+  value: string;
+  onChange: (val: string) => void;
 };
 
-export function JobForm({ onSubmit, loading, offerTemplates }: Props) {
-  const [jobText, setJobText] = useState("");
+export function JobForm({ onSubmit, loading, offerTemplates, value, onChange }: Props) {
+  const jobText = value;
+  const setJobText = onChange;
   const [jobType, setJobType] = useState<JobType>("Automatisch");
   const [templateId, setTemplateId] = useState<string>("");
 
@@ -31,7 +34,7 @@ export function JobForm({ onSubmit, loading, offerTemplates }: Props) {
     const ta = e.currentTarget;
     const start = ta.selectionStart ?? 0;
     const end = ta.selectionEnd ?? 0;
-    setJobText((prev) => prev.slice(0, start) + htmlT + prev.slice(end));
+    setJobText(jobText.slice(0, start) + htmlT + jobText.slice(end));
     const caret = start + htmlT.length;
     requestAnimationFrame(() => {
       ta.selectionStart = caret;

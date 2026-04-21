@@ -41,8 +41,8 @@ yarn-error.log*
 # vercel
 .vercel
 
-# fixtures (can contain large copied HTML)
-upwork_jobs.html
+## fixtures
+# Example HTML fixtures are intentionally checked into git under `fixtures/`.
 
 # typescript
 *.tsbuildinfo

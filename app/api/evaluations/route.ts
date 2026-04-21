@@ -12,6 +12,13 @@ const insertSchema = z.object({
       evaluation: z.record(z.string(), z.unknown()),
       tags: z.array(z.string()).optional(),
       starred: z.boolean().optional(),
+      title: z.string().optional(),
+      jobUrl: z.string().optional(),
+      upworkJobId: z.string().optional(),
+      budget: z.string().optional(),
+      duration: z.string().optional(),
+      skills: z.array(z.string()).optional(),
+      source: z.enum(["upwork_feed", "text"]).optional(),
     }),
   ),
 });

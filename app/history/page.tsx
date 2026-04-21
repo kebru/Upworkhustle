@@ -1,9 +1,10 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { EvaluationResultCard } from "@/components/EvaluationResultCard";
 import { useEvaluationHistory } from "@/hooks/useEvaluationHistory";
 import type { SavedEvaluation } from "@/types";
+import { useOfferTemplates } from "@/hooks/useOfferTemplates";
 
 function formatDate(iso: string): string {
   try {
@@ -43,9 +44,25 @@ function exportAsCsv(entries: SavedEvaluation[]) {
   downloadFile(header + rows.join("\n"), `upwork-evaluations-${new Date().toISOString().slice(0, 10)}.csv`, "text/csv;charset=utf-8");
 }
 
-type SortKey = "date-desc" | "date-asc" | "score-desc" | "score-asc";
+type SortKey = "date-desc" | "date-asc" | "score-desc" | "score-asc" | "ai-fit-desc";
 type ViableFilter = "all" | "yes" | "no";
 type DateFilter = "all" | "7" | "30";
+type ScoreRange = "all" | "7+" | "5-6" | "<5";
+
+function getAiCodingFit(e: SavedEvaluation): number | undefined {
+  const ev = e.evaluation;
+  if ("criteria" in ev && "ai_coding_fit" in ev.criteria) {
+    return (ev.criteria as { ai_coding_fit: number }).ai_coding_fit;
+  }
+  return undefined;
+}
+
+function matchesScoreRange(score: number, range: ScoreRange): boolean {
+  if (range === "all") return true;
+  if (range === "7+") return score >= 7;
+  if (range === "5-6") return score >= 5 && score <= 6;
+  return score < 5;
+}
 
 function TagInput({ tags, onChange }: { tags: string[]; onChange: (t: string[]) => void }) {
   const [input, setInput] = useState("");
@@ -82,13 +99,20 @@ function TagInput({ tags, onChange }: { tags: string[]; onChange: (t: string[]) 
 
 export default function HistoryPage() {
   const { entries, remove, update, toggleStar, removeMany, updateMany, toggleStarMany, hydrated } = useEvaluationHistory();
+  const { templates: offerTemplates, getDefault: getDefaultTemplate } = useOfferTemplates();
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [offerLoading, setOfferLoading] = useState<string | null>(null);
+  const [offerTexts, setOfferTexts] = useState<Record<string, string>>({});
+  const [offerError, setOfferError] = useState<string | null>(null);
+  const [offerTemplateId, setOfferTemplateId] = useState<string | undefined>(undefined);
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortKey>("date-desc");
   const [viableFilter, setViableFilter] = useState<ViableFilter>("all");
   const [dateFilter, setDateFilter] = useState<DateFilter>("all");
   const [starredOnly, setStarredOnly] = useState(false);
   const [tagFilter, setTagFilter] = useState<string | null>(null);
+  const [scoreRange, setScoreRange] = useState<ScoreRange>("all");
+  const [aiFitRange, setAiFitRange] = useState<ScoreRange>("all");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkTagInput, setBulkTagInput] = useState("");
   const [showBulkTagInput, setShowBulkTagInput] = useState(false);
@@ -98,6 +122,34 @@ export default function HistoryPage() {
     entries.forEach((e) => (e.tags ?? []).forEach((t) => set.add(t)));
     return Array.from(set).sort();
   }, [entries]);
+
+  const generateOffer = useCallback(async (item: SavedEvaluation) => {
+    setOfferLoading(item.id);
+    setOfferError(null);
+    try {
+      const defaultTpl = getDefaultTemplate();
+      const tplId = offerTemplateId || defaultTpl?.id;
+      const tpl = tplId ? offerTemplates.find((t) => t.id === tplId) : undefined;
+      const res = await fetch("/api/generate-offer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          evaluationId: item.id,
+          ...(tpl ? { offerTemplate: tpl.content } : {}),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setOfferError(data.error ?? "Fehler beim Generieren.");
+        return;
+      }
+      setOfferTexts((prev) => ({ ...prev, [item.id]: data.offerText }));
+    } catch {
+      setOfferError("Netzwerkfehler beim Generieren des Angebots.");
+    } finally {
+      setOfferLoading(null);
+    }
+  }, [offerTemplateId, offerTemplates, getDefaultTemplate]);
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
@@ -110,8 +162,13 @@ export default function HistoryPage() {
       if (viableFilter === "no" && e.evaluation.viable) return false;
       if (dateCutoff && new Date(e.savedAt).getTime() < dateCutoff) return false;
       if (tagFilter && !(e.tags ?? []).includes(tagFilter)) return false;
+      if (scoreRange !== "all" && !matchesScoreRange(e.evaluation.overall_score, scoreRange)) return false;
+      if (aiFitRange !== "all") {
+        const fit = getAiCodingFit(e);
+        if (fit === undefined || !matchesScoreRange(fit, aiFitRange)) return false;
+      }
       if (q) {
-        const haystack = `${e.jobSnippet} ${(e.tags ?? []).join(" ")}`.toLowerCase();
+        const haystack = `${e.title ?? ""} ${e.jobSnippet} ${(e.tags ?? []).join(" ")}`.toLowerCase();
         if (!haystack.includes(q)) return false;
       }
       return true;
@@ -122,11 +179,12 @@ export default function HistoryPage() {
         case "date-asc": return new Date(a.savedAt).getTime() - new Date(b.savedAt).getTime();
         case "score-desc": return b.evaluation.overall_score - a.evaluation.overall_score;
         case "score-asc": return a.evaluation.overall_score - b.evaluation.overall_score;
+        case "ai-fit-desc": return (getAiCodingFit(b) ?? 0) - (getAiCodingFit(a) ?? 0);
         default: return new Date(b.savedAt).getTime() - new Date(a.savedAt).getTime();
       }
     });
     return list;
-  }, [entries, search, sort, viableFilter, dateFilter, starredOnly, tagFilter]);
+  }, [entries, search, sort, viableFilter, dateFilter, starredOnly, tagFilter, scoreRange, aiFitRange]);
 
   if (!hydrated) {
     return <div className="text-sm text-muted" aria-hidden>Lädt…</div>;
@@ -252,11 +310,24 @@ export default function HistoryPage() {
           <option value="date-asc">Älteste zuerst</option>
           <option value="score-desc">Score ↓</option>
           <option value="score-asc">Score ↑</option>
+          <option value="ai-fit-desc">AI-Fit ↓</option>
         </select>
         <select value={viableFilter} onChange={(e) => setViableFilter(e.target.value as ViableFilter)} className={selectCls}>
           <option value="all">Viable: Alle</option>
           <option value="yes">Viable: Ja</option>
           <option value="no">Viable: Nein</option>
+        </select>
+        <select value={scoreRange} onChange={(e) => setScoreRange(e.target.value as ScoreRange)} className={selectCls}>
+          <option value="all">Score: Alle</option>
+          <option value="7+">Score: 7+</option>
+          <option value="5-6">Score: 5-6</option>
+          <option value="<5">Score: &lt;5</option>
+        </select>
+        <select value={aiFitRange} onChange={(e) => setAiFitRange(e.target.value as ScoreRange)} className={selectCls}>
+          <option value="all">AI-Fit: Alle</option>
+          <option value="7+">AI-Fit: 7+</option>
+          <option value="5-6">AI-Fit: 5-6</option>
+          <option value="<5">AI-Fit: &lt;5</option>
         </select>
         <select value={dateFilter} onChange={(e) => setDateFilter(e.target.value as DateFilter)} className={selectCls}>
           <option value="all">Zeitraum: Alle</option>
@@ -319,23 +390,32 @@ export default function HistoryPage() {
                   className="flex min-w-0 flex-1 items-start justify-between gap-3 rounded-lg px-2 py-2 text-left transition hover:bg-white/5"
                 >
                   <div className="min-w-0 flex-1">
-                    <p className="truncate font-medium text-white">{titlePreview(item.jobSnippet)}</p>
-                    <p className="mt-1 text-xs text-muted">
-                      {formatDate(item.savedAt)}
-                      {(item.tags ?? []).length > 0 && (
-                        <span className="ml-2">
-                          {(item.tags ?? []).map((t) => (
-                            <span key={t} className="ml-1 rounded-full bg-accent/15 px-1.5 py-0.5 text-[10px] text-accent">{t}</span>
-                          ))}
-                        </span>
+                    <p className="truncate font-medium text-white">{item.title || titlePreview(item.jobSnippet)}</p>
+                    <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted">
+                      <span>{formatDate(item.savedAt)}</span>
+                      {item.budget && <span className="rounded bg-white/10 px-1.5 py-0.5 text-[10px]">{item.budget}</span>}
+                      {item.skills && item.skills.length > 0 && (
+                        <span className="rounded bg-white/10 px-1.5 py-0.5 text-[10px]">{item.skills.length} Skills</span>
                       )}
-                    </p>
+                      {item.source === "upwork_feed" && (
+                        <span className="rounded bg-blue-500/15 px-1.5 py-0.5 text-[10px] text-blue-300">Feed</span>
+                      )}
+                      {(item.tags ?? []).map((t) => (
+                        <span key={t} className="rounded-full bg-accent/15 px-1.5 py-0.5 text-[10px] text-accent">{t}</span>
+                      ))}
+                    </div>
                   </div>
                   <div className="flex shrink-0 flex-col items-end gap-2 sm:flex-row sm:items-center">
                     <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${item.evaluation.viable ? "bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-500/40" : "bg-red-500/20 text-red-300 ring-1 ring-red-500/40"}`}>
                       {item.evaluation.viable ? "Ja" : "Nein"}
                     </span>
                     <span className="text-sm font-semibold tabular-nums text-accent">{item.evaluation.overall_score}/10</span>
+                    {(() => {
+                      const fit = getAiCodingFit(item);
+                      if (fit === undefined) return null;
+                      const color = fit >= 7 ? "text-emerald-300" : fit >= 5 ? "text-yellow-300" : "text-red-300";
+                      return <span className={`text-xs font-medium tabular-nums ${color}`}>AI:{fit}</span>;
+                    })()}
                   </div>
                 </button>
 
@@ -350,6 +430,23 @@ export default function HistoryPage() {
 
               {expanded && (
                 <div className="space-y-4 border-t border-white/10 px-4 py-4">
+                  {item.jobUrl && (
+                    <a
+                      href={item.jobUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-xs font-medium text-accent hover:underline"
+                    >
+                      Auf Upwork ansehen &rarr;
+                    </a>
+                  )}
+                  {(item.skills && item.skills.length > 0) && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {item.skills.map((s) => (
+                        <span key={s} className="rounded-full bg-white/10 px-2 py-0.5 text-[11px] text-white/80">{s}</span>
+                      ))}
+                    </div>
+                  )}
                   <div className="flex items-center gap-3">
                     <span className="text-xs font-semibold uppercase tracking-wide text-muted">Tags</span>
                     <TagInput tags={item.tags ?? []} onChange={(tags) => update(item.id, { tags })} />
@@ -359,6 +456,45 @@ export default function HistoryPage() {
                     <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-black/30 p-3 text-xs text-white/90">{item.jobSnippet}</pre>
                   </div>
                   <EvaluationResultCard result={item.evaluation} />
+
+                  {/* Generate Offer */}
+                  <div className="space-y-3 rounded-lg border border-white/10 bg-black/20 p-4">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={offerLoading === item.id}
+                        onClick={() => generateOffer(item)}
+                        className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-background transition hover:bg-accent/90 disabled:opacity-50"
+                      >
+                        {offerLoading === item.id ? "Generiert…" : offerTexts[item.id] ? "Neu generieren" : "Angebotstext generieren"}
+                      </button>
+                      {offerTemplates.length > 0 && (
+                        <select
+                          value={offerTemplateId ?? ""}
+                          onChange={(e) => setOfferTemplateId(e.target.value || undefined)}
+                          className={selectCls}
+                        >
+                          <option value="">Kein Template</option>
+                          {offerTemplates.map((t) => <option key={t.id} value={t.id}>{t.name}{t.isDefault ? " (Standard)" : ""}</option>)}
+                        </select>
+                      )}
+                    </div>
+                    {offerError && offerLoading === null && (
+                      <p className="text-xs text-red-300">{offerError}</p>
+                    )}
+                    {offerTexts[item.id] && (
+                      <div className="space-y-2">
+                        <pre className="whitespace-pre-wrap rounded-lg bg-black/40 p-3 text-sm leading-relaxed text-white/90">{offerTexts[item.id]}</pre>
+                        <button
+                          type="button"
+                          onClick={() => { navigator.clipboard.writeText(offerTexts[item.id]); }}
+                          className="rounded-md border border-accent/50 px-3 py-1.5 text-xs font-medium text-accent transition hover:bg-accent/10"
+                        >
+                          Kopieren
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </li>

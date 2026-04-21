@@ -5,11 +5,16 @@ Bewertet Upwork-Job-Postings automatisch auf Eignung als Solo-Side-Hustle mit Cu
 ## Features
 
 - **Job-Bewertung**: Paste von Upwork-HTML oder Text → automatische Analyse
+- **AI-Coding-Fit**: Zentrale Bewertung ob der Job mit Vibe Coding (Cursor/Claude Code) umsetzbar ist
+- **Chrome Extension**: Ein-Klick Extraktion von Upwork Job-Seiten und Feed — keine manuelle Copy-Paste nötig
 - **Zwei Modi**: BUILD (≤20h Solo) und CONSULTING (Setup + Handover)
 - **Multi-Job**: Mehrere Jobs gleichzeitig bewerten (Feed-HTML oder `---` Trenner)
+- **Angebotstext-Generierung**: Separater LLM-Schritt mit ehrlicher Persona (Claude Sonnet 4) für Upwork-Proposals
 - **Dual-Model-Strategie**: Primary + Fallback Modell mit Deadline-Race
 - **JSON-Repair**: Automatische Reparatur fehlerhafter LLM-Responses
-- **Verlauf**: Lokale Speicherung bewerteter Jobs im Browser
+- **Robuste Dedup**: Upwork Job-ID + Text-Hash, server-seitig persistent (SQLite)
+- **Verlauf mit Filtern**: Score-Range, AI-Coding-Fit, Viable, Starred, Tags, Metadata-Anzeige
+- **Persistenz**: SQLite (Server) + localStorage (Client) mit automatischem Sync
 - **Caching**: Identische Jobs werden nicht doppelt evaluiert
 - **Rate Limiting**: IP-basierter Schutz gegen Missbrauch
 
@@ -19,7 +24,7 @@ Bewertet Upwork-Job-Postings automatisch auf Eignung als Solo-Side-Hustle mit Cu
 - **Backend**: Next.js API Routes
 - **HTML-Parsing**: Cheerio
 - **LLM-API**: OpenRouter (Gemini, GPT)
-- **Storage**: Browser localStorage (Client), In-Memory Map (Server)
+- **Storage**: SQLite (better-sqlite3), Browser localStorage, In-Memory Map (Server)
 - **Testing**: Vitest
 
 ## Setup
@@ -62,6 +67,29 @@ npm run test:watch   # Tests im Watch-Modus
 npm run test:coverage # Tests mit Coverage
 ```
 
+## Chrome Extension
+
+Die Extension extrahiert Jobs direkt von Upwork-Seiten — kein manuelles Copy-Paste nötig.
+
+### Installation
+
+1. Chrome öffnen → `chrome://extensions`
+2. **Entwicklermodus** aktivieren (Toggle oben rechts)
+3. **"Entpackte Erweiterung laden"** → den `extension/` Ordner auswählen
+4. Extension-Icon in der Toolbar pinnen
+
+### Nutzung
+
+- **Job-Detailseite** (`upwork.com/jobs/~XXX`): Klick auf "Job extrahieren & bewerten" → App öffnet sich mit laufender Evaluation
+- **Feed/Search-Seite**: Klick auf "Feed-Seite extrahieren" → alle sichtbaren Jobs werden auf einmal extrahiert und bewertet
+
+### Sicherheit
+
+- **Kein Content-Script**: Nichts läuft permanent auf Upwork-Seiten
+- **Isolated World**: `chrome.scripting.executeScript` mit `world: "ISOLATED"` — Upwork's JavaScript kann die Extraktion nicht sehen
+- **Kein externer Traffic**: Daten gehen nur an `localhost:3000`
+- **Nur bei Klick**: Extension wird nur aktiv wenn du den Button drückst (`activeTab` Permission)
+
 ## API-Endpoints
 
 ### POST /api/parse
@@ -83,6 +111,27 @@ Startet eine LLM-Bewertung.
 Pollt den Status einer async Bewertung.
 
 **Response**: `{ "status": "queued"|"running"|"done"|"error", "result": {...} }`
+
+### POST /api/evaluations
+
+Speichert bewertete Jobs in SQLite.
+
+**Request**: `{ "entries": [{ "id": "...", "savedAt": "...", "jobSnippet": "...", "evaluation": {...}, ... }] }`
+
+### GET /api/evaluations
+
+Gibt gespeicherte Bewertungen zurück (mit optionalen Filtern `?search=`, `?viable=`, `?starred=`).
+
+### POST /api/generate-offer
+
+Generiert einen Angebotstext für einen gespeicherten Job.
+
+**Request**: `{ "evaluationId": "uuid" }` oder `{ "jobSnippet": "...", "evaluation": {...} }`
+**Response**: `{ "offerText": "..." }`
+
+### GET/POST /api/seen-jobs
+
+Verwaltet die "gesehen"-Marker für Job-Dedup (Text-Hash + Upwork Job-ID).
 
 ## Architektur
 
@@ -111,32 +160,47 @@ Browser (page.tsx)
 ```
 app/
   page.tsx                  # Hauptseite (Job-Eingabe + Ergebnisse)
-  history/page.tsx          # Gespeicherte Bewertungen
+  history/page.tsx          # Gespeicherte Bewertungen mit Filtern
+  compare/page.tsx          # Radar-Chart Vergleich (2-3 Jobs)
+  stats/page.tsx            # Statistik-Dashboard
+  templates/page.tsx        # Angebotstext-Vorlagen
   layout.tsx                # Root Layout mit Navigation
   api/
     parse/route.ts          # HTML → strukturierte Jobs
     evaluate/route.ts       # LLM-Bewertung (async + sync)
+    evaluations/route.ts    # CRUD für gespeicherte Bewertungen (SQLite)
+    generate-offer/route.ts # Angebotstext-Generierung (Claude Sonnet 4)
+    seen-jobs/route.ts      # Dedup-Marker (Hash + Upwork Job-ID)
+    feed/route.ts           # Upwork Feed-Abruf
 components/
   JobForm.tsx               # Textarea + Paste-Handler
-  JobRunCard.tsx             # Einzelne Job-Bewertung
+  JobRunCard.tsx            # Einzelne Job-Bewertung
   EvaluationResultCard.tsx  # Ergebnis-Anzeige (V1/V2)
-  ErrorBoundary.tsx         # React Error Boundary
-  LoadingSkeleton.tsx       # Loading-Animation
+  FeedRefreshButton.tsx     # Feed-Refresh aus der App
 hooks/
-  useEvaluationHistory.ts   # localStorage Hook mit Versionierung
+  useEvaluationHistory.ts   # SQLite + localStorage Sync
+  useSeenJobs.ts            # Multi-Signal Dedup (Upwork-ID + Text-Hash)
+  useOfferTemplates.ts      # Angebotstext-Vorlagen
 lib/
   api-client.ts             # Frontend API-Wrapper
-  constants.ts              # Alle Magic Numbers zentral
+  constants.ts              # Alle konfigurierbaren Werte
   llm-client.ts             # OpenRouter HTTP-Client
-  eval-prompts.ts           # LLM System-Prompts
-  eval-validator.ts         # Response-Validierung
-  eval-cache.ts             # Response-Caching
+  db.ts                     # SQLite (better-sqlite3) mit Migrationen
+  eval-prompts.ts           # LLM System-Prompts (AI-Coding-Fit zentral)
+  eval-validator.ts         # Response-Validierung + Semantic Quality
+  eval-cache.ts             # In-Memory Response-Cache
+  offer-prompt.ts           # Angebotstext-Prompt (ehrliche Persona)
+  upwork-job-id.ts          # Upwork Job-ID Extraktion
   rateLimit.ts              # IP Rate Limiting
   normalizeJobInput.ts      # HTML/Text → Clean Text
   splitJobs.ts              # Multi-Job Splitting
-  ...
 types/
   index.ts                  # Shared TypeScript Types
+extension/
+  manifest.json             # Chrome Extension (Manifest V3)
+  popup.html/js             # Extension Popup UI
+  extract-job.js            # Job-Detailseite Extraktion
+  extract-feed.js           # Feed/Search Extraktion
 __tests__/
   lib/                      # Unit Tests für lib/*
 ```

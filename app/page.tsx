@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { JobForm } from "@/components/JobForm";
 import { JobRunCard } from "@/components/JobRunCard";
@@ -10,6 +10,7 @@ import { useEvaluationHistory } from "@/hooks/useEvaluationHistory";
 import { useSeenJobs } from "@/hooks/useSeenJobs";
 import { normalizeJobText } from "@/lib/normalizeJobInput";
 import { splitJobPostings } from "@/lib/splitJobs";
+import { extractUpworkJobId } from "@/lib/upwork-job-id";
 import { parseJobs, startEvaluation, pollEvaluation, streamEvaluation } from "@/lib/api-client";
 import type { PollResp } from "@/lib/api-client";
 import { POLL_INTERVAL_MS, POLL_TIMEOUT_MS, CONCURRENCY } from "@/lib/constants";
@@ -24,8 +25,60 @@ function makeRunId(): string {
     : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-export default function HomePage() {
+function waitForVisible(): Promise<void> {
+  if (typeof document === "undefined" || !document.hidden) return Promise.resolve();
+  return new Promise((resolve) => {
+    const handler = () => {
+      if (!document.hidden) {
+        document.removeEventListener("visibilitychange", handler);
+        resolve();
+      }
+    };
+    document.addEventListener("visibilitychange", handler);
+  });
+}
+
+function createForegroundTimer() {
+  let elapsed = 0;
+  let lastTick = Date.now();
+  let hidden = typeof document !== "undefined" && document.hidden;
+
+  const handler = () => {
+    if (!hidden) elapsed += Date.now() - lastTick;
+    lastTick = Date.now();
+    hidden = document.hidden;
+  };
+
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", handler);
+  }
+
+  return {
+    foregroundMs: () => {
+      if (!hidden) elapsed += Date.now() - lastTick;
+      lastTick = Date.now();
+      return elapsed;
+    },
+    dispose: () => {
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", handler);
+      }
+    },
+  };
+}
+
+export default function HomePageWrapper() {
+  return (
+    <Suspense>
+      <HomePage />
+    </Suspense>
+  );
+}
+
+function HomePage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const autoEvalTriggered = useRef(false);
   const [loading, setLoading] = useState(false);
   const [runs, setRuns] = useState<JobRun[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -81,7 +134,7 @@ export default function HomePage() {
     }
 
     const totalBefore = parsedJobs.length;
-    parsedJobs = parsedJobs.filter((j) => !isSeen(j.jobText));
+    parsedJobs = parsedJobs.filter((j) => !isSeen(j.jobText, j.jobUrl));
     const skipped = totalBefore - parsedJobs.length;
     setSkippedCount(skipped);
 
@@ -144,7 +197,7 @@ export default function HomePage() {
 
         const applyResult = (p: PollResp) => {
           if (p.status === "done" && p.result) {
-            markSeen([run.jobText]);
+            markSeen([{ jobText: run.jobText, jobUrl: run.jobUrl }]);
             setRuns((prev) =>
               prev.map((r, j) =>
                 j === i
@@ -170,31 +223,42 @@ export default function HomePage() {
         // Try SSE first, fallback to polling
         const sseSupported = typeof EventSource !== "undefined";
         if (sseSupported) {
+          const timer = createForegroundTimer();
           await new Promise<void>((resolve) => {
             let fallbackTriggered = false;
             const unsub = streamEvaluation(jobId, (data) => {
-              if (applyResult(data)) resolve();
+              if (applyResult(data)) { timer.dispose(); resolve(); }
             }, () => {
               if (!fallbackTriggered) {
                 fallbackTriggered = true;
+                timer.dispose();
                 resolve();
               }
             });
-            setTimeout(() => { unsub(); if (!fallbackTriggered) { fallbackTriggered = true; resolve(); } }, POLL_TIMEOUT_MS);
+            const checkTimeout = () => {
+              if (timer.foregroundMs() >= POLL_TIMEOUT_MS) {
+                unsub();
+                if (!fallbackTriggered) { fallbackTriggered = true; timer.dispose(); resolve(); }
+              } else {
+                setTimeout(checkTimeout, 2000);
+              }
+            };
+            setTimeout(checkTimeout, 2000);
           });
-          // Check if already resolved
           const currentRuns = await new Promise<JobRun[]>((res) => setRuns((prev) => { res(prev); return prev; }));
           const cur = currentRuns[i];
           if (cur && (cur.status === "done" || cur.status === "error")) return;
         }
 
-        // Polling fallback
-        const started = Date.now();
-        while (Date.now() - started < POLL_TIMEOUT_MS) {
+        // Polling fallback — only count foreground time, poll immediately on tab focus
+        const timer = createForegroundTimer();
+        while (timer.foregroundMs() < POLL_TIMEOUT_MS) {
+          await waitForVisible();
           const p = await pollEvaluation(jobId);
-          if (applyResult(p)) return;
+          if (applyResult(p)) { timer.dispose(); return; }
           await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
         }
+        timer.dispose();
 
         setRuns((prev) =>
           prev.map((r, j) =>
@@ -240,7 +304,17 @@ export default function HomePage() {
 
   function handleSaveOne(run: JobRun) {
     if (!run.result || !run.jobText.trim()) return;
-    save({ jobSnippet: run.jobText, evaluation: run.result });
+    save({
+      jobSnippet: run.jobText,
+      evaluation: run.result,
+      title: run.title,
+      jobUrl: run.jobUrl,
+      upworkJobId: run.jobUrl ? extractUpworkJobId(run.jobUrl) : undefined,
+      budget: run.budget,
+      duration: run.duration,
+      skills: run.skills,
+      source: run.source,
+    });
     showToast("Gespeichert");
   }
 
@@ -254,6 +328,13 @@ export default function HomePage() {
       done.map((r) => ({
         jobSnippet: r.jobText,
         evaluation: r.result,
+        title: r.title,
+        jobUrl: r.jobUrl,
+        upworkJobId: r.jobUrl ? extractUpworkJobId(r.jobUrl) : undefined,
+        budget: r.budget,
+        duration: r.duration,
+        skills: r.skills,
+        source: r.source,
       })),
     );
     showToast(
@@ -278,16 +359,18 @@ export default function HomePage() {
       setRuns((prev) =>
         prev.map((r, j) => (j === index ? { ...r, evaluationJobId: jobId } : r)),
       );
-      const started = Date.now();
-      while (Date.now() - started < POLL_TIMEOUT_MS) {
+      const retryTimer = createForegroundTimer();
+      while (retryTimer.foregroundMs() < POLL_TIMEOUT_MS) {
+        await waitForVisible();
         const p = await pollEvaluation(jobId);
         if (p.status === "done" && p.result) {
-          markSeen([run.jobText]);
+          markSeen([{ jobText: run.jobText, jobUrl: run.jobUrl }]);
           setRuns((prev) =>
             prev.map((r, j) =>
               j === index ? { ...r, status: "done" as const, result: p.result, jobText: typeof p.jobTextUsed === "string" && p.jobTextUsed.length > 0 ? p.jobTextUsed : r.jobText } : r,
             ),
           );
+          retryTimer.dispose();
           return;
         }
         if (p.status === "error") {
@@ -296,10 +379,12 @@ export default function HomePage() {
               j === index ? { ...r, status: "error" as const, error: typeof p.error === "string" ? p.error : "Bewertung fehlgeschlagen." } : r,
             ),
           );
+          retryTimer.dispose();
           return;
         }
         await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
       }
+      retryTimer.dispose();
       setRuns((prev) =>
         prev.map((r, j) =>
           j === index ? { ...r, status: "error" as const, error: "Timeout beim Warten auf die Bewertung." } : r,
@@ -314,9 +399,19 @@ export default function HomePage() {
     }
   }
 
+  useEffect(() => {
+    if (autoEvalTriggered.current) return;
+    const jobText = searchParams.get("autoEval");
+    if (!jobText || loading) return;
+    autoEvalTriggered.current = true;
+    window.history.replaceState({}, "", "/");
+    handleSubmit(jobText);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
+
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const handleFeedJobs = useCallback((feedJobs: ParsedJob[]) => {
-    const newJobs = feedJobs.filter((j) => !isSeen(j.jobText));
+    const newJobs = feedJobs.filter((j) => !isSeen(j.jobText, j.jobUrl));
     if (newJobs.length === 0) return;
     const jobText = newJobs.map((j) => j.jobText).join("\n---JOBSPLIT---\n");
     handleSubmit(jobText, currentJobType);

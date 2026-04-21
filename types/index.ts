@@ -64,6 +64,13 @@ export interface SavedEvaluation {
   evaluation: EvaluationResultAny;
   tags?: string[];
   starred?: boolean;
+  title?: string;
+  jobUrl?: string;
+  upworkJobId?: string;
+  budget?: string;
+  duration?: string;
+  skills?: string[];
+  source?: "upwork_feed" | "text";
 }
 
 export interface ParsedJob {

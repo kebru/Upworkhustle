@@ -29,17 +29,50 @@ function getDb(): Database.Database {
     )
   `);
 
+  _db.exec(`
+    CREATE TABLE IF NOT EXISTS seen_jobs (
+      hash TEXT PRIMARY KEY,
+      upwork_job_id TEXT,
+      seen_at TEXT NOT NULL
+    )
+  `);
+
+  const version = (_db.pragma("user_version", { simple: true }) as number) ?? 0;
+  if (version < 1) {
+    _db.exec(`
+      ALTER TABLE evaluations ADD COLUMN title TEXT;
+      ALTER TABLE evaluations ADD COLUMN job_url TEXT;
+      ALTER TABLE evaluations ADD COLUMN upwork_job_id TEXT;
+      ALTER TABLE evaluations ADD COLUMN budget TEXT;
+      ALTER TABLE evaluations ADD COLUMN duration TEXT;
+      ALTER TABLE evaluations ADD COLUMN skills TEXT DEFAULT '[]';
+      ALTER TABLE evaluations ADD COLUMN source TEXT;
+      CREATE INDEX IF NOT EXISTS idx_eval_upwork_job_id ON evaluations(upwork_job_id);
+      CREATE INDEX IF NOT EXISTS idx_seen_upwork_id ON seen_jobs(upwork_job_id);
+      PRAGMA user_version = 1;
+    `);
+  }
+
   return _db;
 }
 
-function rowToEntry(row: {
+interface EvalRow {
   id: string;
   saved_at: string;
   job_snippet: string;
   evaluation: string;
   tags: string;
   starred: number;
-}): SavedEvaluation {
+  title?: string | null;
+  job_url?: string | null;
+  upwork_job_id?: string | null;
+  budget?: string | null;
+  duration?: string | null;
+  skills?: string | null;
+  source?: string | null;
+}
+
+function rowToEntry(row: EvalRow): SavedEvaluation {
   return {
     id: row.id,
     savedAt: row.saved_at,
@@ -47,6 +80,13 @@ function rowToEntry(row: {
     evaluation: JSON.parse(row.evaluation) as EvaluationResultAny,
     tags: JSON.parse(row.tags) as string[],
     starred: row.starred === 1,
+    title: row.title ?? undefined,
+    jobUrl: row.job_url ?? undefined,
+    upworkJobId: row.upwork_job_id ?? undefined,
+    budget: row.budget ?? undefined,
+    duration: row.duration ?? undefined,
+    skills: row.skills ? JSON.parse(row.skills) as string[] : undefined,
+    source: (row.source as SavedEvaluation["source"]) ?? undefined,
   };
 }
 
@@ -61,8 +101,8 @@ export function dbGetAll(options?: {
 
   const conditions: string[] = [];
   if (options?.search) {
-    conditions.push("job_snippet LIKE ?");
-    params.push(`%${options.search}%`);
+    conditions.push("(job_snippet LIKE ? OR title LIKE ?)");
+    params.push(`%${options.search}%`, `%${options.search}%`);
   }
   if (options?.starred !== undefined) {
     conditions.push("starred = ?");
@@ -73,14 +113,7 @@ export function dbGetAll(options?: {
     sql = `SELECT * FROM evaluations WHERE ${conditions.join(" AND ")} ORDER BY saved_at DESC`;
   }
 
-  const rows = db.prepare(sql).all(...params) as Array<{
-    id: string;
-    saved_at: string;
-    job_snippet: string;
-    evaluation: string;
-    tags: string;
-    starred: number;
-  }>;
+  const rows = db.prepare(sql).all(...params) as EvalRow[];
 
   let entries = rows.map(rowToEntry);
 
@@ -93,49 +126,42 @@ export function dbGetAll(options?: {
 
 export function dbGetById(id: string): SavedEvaluation | undefined {
   const db = getDb();
-  const row = db.prepare("SELECT * FROM evaluations WHERE id = ?").get(id) as {
-    id: string;
-    saved_at: string;
-    job_snippet: string;
-    evaluation: string;
-    tags: string;
-    starred: number;
-  } | undefined;
+  const row = db.prepare("SELECT * FROM evaluations WHERE id = ?").get(id) as EvalRow | undefined;
   return row ? rowToEntry(row) : undefined;
+}
+
+const INSERT_SQL = `INSERT OR REPLACE INTO evaluations
+  (id, saved_at, job_snippet, evaluation, tags, starred, title, job_url, upwork_job_id, budget, duration, skills, source)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+function entryParams(e: SavedEvaluation) {
+  return [
+    e.id, e.savedAt, e.jobSnippet, JSON.stringify(e.evaluation),
+    JSON.stringify(e.tags ?? []), e.starred ? 1 : 0,
+    e.title ?? null, e.jobUrl ?? null, e.upworkJobId ?? null,
+    e.budget ?? null, e.duration ?? null,
+    e.skills ? JSON.stringify(e.skills) : null, e.source ?? null,
+  ];
 }
 
 export function dbInsert(entry: SavedEvaluation): void {
   const db = getDb();
-  db.prepare(
-    "INSERT OR REPLACE INTO evaluations (id, saved_at, job_snippet, evaluation, tags, starred) VALUES (?, ?, ?, ?, ?, ?)",
-  ).run(
-    entry.id,
-    entry.savedAt,
-    entry.jobSnippet,
-    JSON.stringify(entry.evaluation),
-    JSON.stringify(entry.tags ?? []),
-    entry.starred ? 1 : 0,
-  );
+  db.prepare(INSERT_SQL).run(...entryParams(entry));
 }
 
 export function dbInsertMany(entries: SavedEvaluation[]): void {
   const db = getDb();
-  const stmt = db.prepare(
-    "INSERT OR REPLACE INTO evaluations (id, saved_at, job_snippet, evaluation, tags, starred) VALUES (?, ?, ?, ?, ?, ?)",
-  );
+  const stmt = db.prepare(INSERT_SQL);
   const insertAll = db.transaction((items: SavedEvaluation[]) => {
-    for (const e of items) {
-      stmt.run(
-        e.id,
-        e.savedAt,
-        e.jobSnippet,
-        JSON.stringify(e.evaluation),
-        JSON.stringify(e.tags ?? []),
-        e.starred ? 1 : 0,
-      );
-    }
+    for (const e of items) stmt.run(...entryParams(e));
   });
   insertAll(entries);
+}
+
+export function dbFindByUpworkJobId(upworkJobId: string): SavedEvaluation | undefined {
+  const db = getDb();
+  const row = db.prepare("SELECT * FROM evaluations WHERE upwork_job_id = ? LIMIT 1").get(upworkJobId) as EvalRow | undefined;
+  return row ? rowToEntry(row) : undefined;
 }
 
 export function dbUpdate(
@@ -170,4 +196,29 @@ export function dbDeleteMany(ids: string[]): void {
   const db = getDb();
   const placeholders = ids.map(() => "?").join(",");
   db.prepare(`DELETE FROM evaluations WHERE id IN (${placeholders})`).run(...ids);
+}
+
+// ── Seen Jobs ──
+
+export function dbMarkSeen(entries: Array<{ hash: string; upworkJobId?: string }>): void {
+  if (entries.length === 0) return;
+  const db = getDb();
+  const stmt = db.prepare("INSERT OR IGNORE INTO seen_jobs (hash, upwork_job_id, seen_at) VALUES (?, ?, ?)");
+  const now = new Date().toISOString();
+  const insertAll = db.transaction((items: typeof entries) => {
+    for (const e of items) stmt.run(e.hash, e.upworkJobId ?? null, now);
+  });
+  insertAll(entries);
+}
+
+export function dbGetAllSeenHashes(): string[] {
+  const db = getDb();
+  const rows = db.prepare("SELECT hash FROM seen_jobs").all() as Array<{ hash: string }>;
+  return rows.map((r) => r.hash);
+}
+
+export function dbGetAllSeenUpworkJobIds(): string[] {
+  const db = getDb();
+  const rows = db.prepare("SELECT DISTINCT upwork_job_id FROM seen_jobs WHERE upwork_job_id IS NOT NULL").all() as Array<{ upwork_job_id: string }>;
+  return rows.map((r) => r.upwork_job_id);
 }

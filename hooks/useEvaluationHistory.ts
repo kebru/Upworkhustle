@@ -137,8 +137,20 @@ export function useEvaluationHistory() {
 
   const getAll = useCallback((): SavedEvaluation[] => entries, [entries]);
 
+  type SaveInput = {
+    jobSnippet: string;
+    evaluation: EvaluationResultAny;
+    title?: string;
+    jobUrl?: string;
+    upworkJobId?: string;
+    budget?: string;
+    duration?: string;
+    skills?: string[];
+    source?: "upwork_feed" | "text";
+  };
+
   const save = useCallback(
-    (entry: { jobSnippet: string; evaluation: EvaluationResultAny }) => {
+    (entry: SaveInput) => {
       const newItem: SavedEvaluation = {
         id:
           typeof crypto !== "undefined" && crypto.randomUUID
@@ -147,6 +159,13 @@ export function useEvaluationHistory() {
         savedAt: new Date().toISOString(),
         jobSnippet: entry.jobSnippet,
         evaluation: entry.evaluation,
+        title: entry.title,
+        jobUrl: entry.jobUrl,
+        upworkJobId: entry.upworkJobId,
+        budget: entry.budget,
+        duration: entry.duration,
+        skills: entry.skills,
+        source: entry.source,
       };
       setEntries((prev) => {
         const next = [newItem, ...prev];
@@ -168,7 +187,7 @@ export function useEvaluationHistory() {
   }, []);
 
   const saveMany = useCallback(
-    (items: { jobSnippet: string; evaluation: EvaluationResultAny }[]) => {
+    (items: SaveInput[]) => {
       if (items.length === 0) return;
       const now = new Date().toISOString();
       const newItems: SavedEvaluation[] = items.map((entry, i) => ({
@@ -179,6 +198,13 @@ export function useEvaluationHistory() {
         savedAt: now,
         jobSnippet: entry.jobSnippet,
         evaluation: entry.evaluation,
+        title: entry.title,
+        jobUrl: entry.jobUrl,
+        upworkJobId: entry.upworkJobId,
+        budget: entry.budget,
+        duration: entry.duration,
+        skills: entry.skills,
+        source: entry.source,
       }));
       setEntries((prev) => {
         const next = [...newItems, ...prev];

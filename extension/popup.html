@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 340px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0f1117;
+      color: #e2e8f0;
+      font-size: 13px;
+    }
+    .header {
+      padding: 14px 16px 10px;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+    }
+    .header h1 {
+      font-size: 15px;
+      font-weight: 600;
+      color: #fff;
+    }
+    .header p {
+      font-size: 11px;
+      color: #94a3b8;
+      margin-top: 2px;
+    }
+    .content { padding: 12px 16px 16px; }
+    .server-url {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 12px;
+    }
+    .server-url input {
+      flex: 1;
+      background: #1a1d27;
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 6px;
+      padding: 7px 10px;
+      font-size: 12px;
+      color: #fff;
+      outline: none;
+    }
+    .server-url input:focus { border-color: #6366f1; }
+    button {
+      width: 100%;
+      padding: 10px;
+      border: none;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    button:hover { opacity: 0.9; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-primary { background: #6366f1; color: #fff; }
+    .btn-feed { background: #1e293b; color: #6366f1; border: 1px solid rgba(99,102,241,0.3); margin-top: 8px; }
+    .status {
+      margin-top: 10px;
+      padding: 8px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      display: none;
+    }
+    .status.ok { display: block; background: rgba(16,185,129,0.12); color: #6ee7b7; }
+    .status.err { display: block; background: rgba(239,68,68,0.12); color: #fca5a5; }
+    .status.info { display: block; background: rgba(99,102,241,0.12); color: #a5b4fc; }
+    .job-count {
+      margin-top: 8px;
+      font-size: 12px;
+      color: #94a3b8;
+      display: none;
+    }
+    .job-count.visible { display: block; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Job Evaluator</h1>
+    <p>Extrahiert Jobs von der aktuellen Upwork-Seite</p>
+  </div>
+  <div class="content">
+    <div class="server-url">
+      <input type="text" id="serverUrl" value="http://localhost:3000" placeholder="Server URL">
+    </div>
+    <button class="btn-primary" id="extractBtn">Job extrahieren & bewerten</button>
+    <button class="btn-feed" id="feedBtn">Feed-Seite extrahieren (alle Jobs)</button>
+    <div class="job-count" id="jobCount"></div>
+    <div class="status" id="status"></div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

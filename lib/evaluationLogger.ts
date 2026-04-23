@@ -26,6 +26,7 @@ export type EvaluationLogPayload = {
   };
   meta?: {
     source?: "upwork_feed" | "text";
+    mode?: "sidehustle" | "quick_cash";
     feedHasMoreToggle?: boolean;
     likelyTruncated?: boolean;
     descriptionCharLength?: number;
@@ -33,6 +34,7 @@ export type EvaluationLogPayload = {
     wasTrimmed?: boolean;
     title?: string;
     jobUrl?: string;
+    upworkJobId?: string;
     postedOn?: string;
     jobType?: string;
     budget?: string;

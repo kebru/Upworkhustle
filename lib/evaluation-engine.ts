@@ -169,6 +169,15 @@ export function createEvalEngine(config: EvalEngineConfig) {
   const evalJobs = getOrCreateJobStore(config.globalStoreKey);
   ensureGc(config.globalStoreKey, `${config.globalStoreKey}__gc`);
 
+  // If an async job finishes extremely quickly (e.g. immediate provider failure),
+  // a second POST with identical text can arrive after status flips to done/error.
+  // Dedup those very-recent completions to avoid duplicate evaluations and flaky UX.
+  const RECENT_COMPLETION_DEDUP_MS = 5_000;
+
+  // Normalize for dedup comparisons. Must match the intent of eval-cache normalization,
+  // but we keep it local to avoid leaking internal cache helpers.
+  const normalizeForDedup = (text: string) => text.toLowerCase().replace(/\s+/g, " ").trim();
+
   const llmParams = {
     temperature: LLM_TEMPERATURE,
     max_tokens: LLM_MAX_TOKENS,
@@ -440,12 +449,21 @@ export function createEvalEngine(config: EvalEngineConfig) {
 
     try {
       if (asyncMode) {
-        const textHash = jobTextHash(jobText);
+        const norm = normalizeForDedup(jobText);
+        const textHash = jobTextHash(norm);
         let existingJobId: string | null = null;
         evalJobs.forEach((rec, id) => {
-          if (!existingJobId && (rec.status === "queued" || rec.status === "running")) {
-            const recHash = rec.jobTextUsed ? jobTextHash(rec.jobTextUsed) : null;
-            if (recHash === textHash) existingJobId = id;
+          if (existingJobId) return;
+          const inFlight = rec.status === "queued" || rec.status === "running";
+          const recentlyCompleted =
+            (rec.status === "done" || rec.status === "error") &&
+            Date.now() - rec.updatedAt <= RECENT_COMPLETION_DEDUP_MS;
+          if (inFlight || recentlyCompleted) {
+            const recNorm = rec.jobTextUsed ? normalizeForDedup(rec.jobTextUsed) : null;
+            if (!recNorm) return;
+            // Compare both hash and normalized text to prevent rare hash collisions.
+            const recHash = jobTextHash(recNorm);
+            if (recHash === textHash && recNorm === norm) existingJobId = id;
           }
         });
         if (existingJobId) {
@@ -454,7 +472,7 @@ export function createEvalEngine(config: EvalEngineConfig) {
 
         const jobId = makeId();
         const now = Date.now();
-        evalJobs.set(jobId, { id: jobId, status: "queued", createdAt: now, updatedAt: now, jobTextUsed: jobText });
+        evalJobs.set(jobId, { id: jobId, status: "queued", createdAt: now, updatedAt: now, jobTextUsed: norm });
 
         void (async () => {
           const rec = evalJobs.get(jobId);

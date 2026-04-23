@@ -37,6 +37,9 @@ export async function POST(req: Request) {
   if (!text || text.length < 50) {
     return NextResponse.json({ error: "jobText fehlt/zu kurz." }, { status: 400 });
   }
+  if (text.length > 2_000_000) {
+    return NextResponse.json({ error: "jobText zu groß (max. 2MB)." }, { status: 413 });
+  }
   const id = makeId();
   store.set(id, { id, createdAt: Date.now(), text });
   return NextResponse.json({ id }, { status: 200 });

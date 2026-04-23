@@ -138,11 +138,9 @@ feedBtn.addEventListener("click", async () => {
     showStatus("Öffne App...", "info");
 
     const jobText = data.jobs.map((j) => j.jobText).join("\n---JOBSPLIT---\n");
-    const param = encodeURIComponent(jobText);
 
-    // URL length limit ~2MB in Chrome, but use POST fallback for large payloads
-    if (param.length > 50000) {
-      // Store on local server to avoid URL limits
+    // Check raw length before encoding — URL-encoding inflates by ~15%, server limit is 48K decoded
+    if (jobText.length > 40000) {
       const res = await fetch(`${getServerUrl()}/api/extension/pending`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -152,9 +150,10 @@ feedBtn.addEventListener("click", async () => {
       if (!res.ok || !payload?.id) {
         throw new Error(payload?.error || "Konnte Payload nicht an Server senden.");
       }
-      chrome.tabs.create({ url: `${getServerUrl()}?autoEvalId=${encodeURIComponent(payload.id)}` });
+      chrome.tabs.create({ url: `${getServerUrl()}?autoEvalId=${encodeURIComponent(payload.id)}&tab=eval` });
     } else {
-      chrome.tabs.create({ url: `${getServerUrl()}?autoEval=${param}` });
+      const param = encodeURIComponent(jobText);
+      chrome.tabs.create({ url: `${getServerUrl()}?autoEval=${param}&tab=eval` });
     }
 
     showStatus(`${data.count} Jobs gesendet!`, "ok");
@@ -194,9 +193,9 @@ searchQuickBtn.addEventListener("click", async () => {
     showStatus("Öffne App (Quick Cash)...", "info");
 
     const jobText = data.jobs.map((j) => j.jobText).join("\n---JOBSPLIT---\n");
-    const param = encodeURIComponent(jobText);
 
-    if (param.length > 50000) {
+    // Check raw length before encoding — URL-encoding inflates by ~15%, server limit is 48K decoded
+    if (jobText.length > 40000) {
       const res = await fetch(`${getServerUrl()}/api/extension/pending`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -206,12 +205,13 @@ searchQuickBtn.addEventListener("click", async () => {
       if (!res.ok || !payload?.id) {
         throw new Error(payload?.error || "Konnte Payload nicht an Server senden.");
       }
-      chrome.tabs.create({ url: `${getServerUrl()}?autoEvalId=${encodeURIComponent(payload.id)}&mode=quick_cash` });
+      chrome.tabs.create({ url: `${getServerUrl()}?autoEvalId=${encodeURIComponent(payload.id)}&tab=eval` });
     } else {
-      chrome.tabs.create({ url: `${getServerUrl()}?autoEval=${param}&mode=quick_cash` });
+      const param = encodeURIComponent(jobText);
+      chrome.tabs.create({ url: `${getServerUrl()}?autoEval=${param}&tab=eval` });
     }
 
-    showStatus(`${data.count} Jobs gesendet (Quick Cash)!`, "ok");
+    showStatus(`${data.count} Jobs gesendet!`, "ok");
   } catch (err) {
     showStatus(err.message || "Fehler beim Extrahieren.", "err");
   } finally {

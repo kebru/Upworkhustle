@@ -1,95 +1,25 @@
-export interface EvaluationCriteria {
-  clear_requirements: number;
-  no_complex_backend: number;
-}
-
-export interface EvaluationResult {
-  viable: boolean;
-  effort_hours: string;
-  overall_score: number;
-  criteria: EvaluationCriteria;
-  risks: string[];
-  steps: string[];
-  reasoning: string;
-}
-
-export interface EvaluationCriteriaV2 {
-  scope_clarity: number;
-  low_integration_ops_complexity: number;
-  solo_delivery_fit: number;
-  ai_coding_fit: number;
-}
-
-export interface EvaluationResultV2 {
-  /** Strict: Solo sidehustle build, <=20h, minimal integrations, no ops/on-call. */
-  viable_build_20h: boolean;
-  /** Consulting-style setups allowed if clearly scoped + handover (no long-term maintenance). */
-  viable_consulting: boolean;
-
-  confidence: number; // 1..10
-  effort_hours: string;
-  timeline_days: string; // "2-4"
-  price_range: string; // "300-600"
-
-  overall_score: number; // 1..10
-  criteria: EvaluationCriteriaV2;
-
-  risks: string[];
-  next_steps: string[]; // 5-8
-  clarifying_questions: string[]; // 3-8
-  offer_message: string;
-  learning_path: string[]; // 0-6
-
-  reasoning: string;
-
-  /**
-   * Backward-compat for existing UI/history.
-   * Server sets this to (viable_build_20h || viable_consulting).
-   */
-  viable: boolean;
-  /**
-   * Backward-compat: keep old keys when possible.
-   * - clear_requirements := scope_clarity
-   * - no_complex_backend := low_integration_ops_complexity
-   */
-  steps: string[];
-}
-
 export interface EvaluationResultQuickCash {
-  /**
-   * Quick-Cash Mode: Fokus auf sehr kleine, schnell lieferbare Jobs.
-   * Output ist bewusst anders als V2-Sidehustle.
-   */
   quick_cash_score: number; // 0..100
   confidence: number; // 1..10
   effort: string; // z.B. "2-4h" / "1 Tag"
-  /** Backward-compat for existing UI components. */
-  effort_hours: string;
-  why: string[]; // 1-4
-  questions: string[]; // 2-6
-  proposal_de: string; // direkt nutzbarer Proposal-Text (DE)
-  red_flags: string[]; // 0-6
+  effort_hours: string; // backward-compat alias für effort
+  why: string[]; // 1-4 Gründe
+  questions: string[]; // 2-6 Rückfragen
+  proposal_de: string; // direkt nutzbarer Proposal-Text auf Deutsch
+  red_flags: string[]; // 0-6 Risiken
   reasoning: string;
-
-  /** Backward-compat for UI/history filtering. */
-  viable: boolean;
-  /** Keep old field name used in UI badges. */
-  overall_score: number; // 1..10 (rough mapping)
-  /** Backward-compat: steps list to render something useful. */
-  steps: string[];
-  /** Backward-compat: risks list maps to red_flags. */
-  risks: string[];
+  // backward-compat für DB-Filter und UI
+  viable: boolean; // true wenn quick_cash_score >= 50
+  overall_score: number; // 1..10 (Mapping aus quick_cash_score)
+  steps: string[]; // alias für why
+  risks: string[]; // alias für red_flags
 }
-
-export type EvaluationResultAny = EvaluationResult | EvaluationResultV2 | EvaluationResultQuickCash;
-
-export type EvalMode = "sidehustle" | "quick_cash";
 
 export interface SavedEvaluation {
   id: string;
   savedAt: string;
   jobSnippet: string;
-  evaluation: EvaluationResultAny;
+  evaluation: EvaluationResultQuickCash;
   tags?: string[];
   starred?: boolean;
   title?: string;
@@ -99,6 +29,7 @@ export interface SavedEvaluation {
   duration?: string;
   skills?: string[];
   source?: "upwork_feed" | "text";
+  jobTextHash?: string;
 }
 
 export interface ParsedJob {

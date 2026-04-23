@@ -1,6 +1,6 @@
 import path from "path";
 import fs from "fs";
-import type { SavedEvaluation, EvaluationResultAny } from "@/types";
+import type { SavedEvaluation, EvaluationResultQuickCash } from "@/types";
 
 const DB_PATH = process.env.DB_PATH || path.join(process.cwd(), "data", "evaluations.db");
 
@@ -97,6 +97,15 @@ function tryLoadSqlite(): SqliteDb | null {
         PRAGMA user_version = 1;
       `);
     }
+    if (version < 2) {
+      db.exec(`
+        ALTER TABLE evaluations ADD COLUMN quick_cash_score INTEGER;
+        ALTER TABLE evaluations ADD COLUMN job_text_hash TEXT;
+        CREATE INDEX IF NOT EXISTS idx_eval_score ON evaluations(quick_cash_score DESC);
+        CREATE INDEX IF NOT EXISTS idx_eval_job_text_hash ON evaluations(job_text_hash);
+        PRAGMA user_version = 2;
+      `);
+    }
 
     return db;
   } catch (e) {
@@ -140,6 +149,8 @@ interface EvalRow {
   duration?: string | null;
   skills?: string | null;
   source?: string | null;
+  quick_cash_score?: number | null;
+  job_text_hash?: string | null;
 }
 
 function rowToEntry(row: EvalRow): SavedEvaluation {
@@ -147,7 +158,7 @@ function rowToEntry(row: EvalRow): SavedEvaluation {
     id: row.id,
     savedAt: row.saved_at,
     jobSnippet: row.job_snippet,
-    evaluation: JSON.parse(row.evaluation) as EvaluationResultAny,
+    evaluation: JSON.parse(row.evaluation) as EvaluationResultQuickCash,
     tags: JSON.parse(row.tags) as string[],
     starred: row.starred === 1,
     title: row.title ?? undefined,
@@ -157,6 +168,7 @@ function rowToEntry(row: EvalRow): SavedEvaluation {
     duration: row.duration ?? undefined,
     skills: row.skills ? JSON.parse(row.skills) as string[] : undefined,
     source: (row.source as SavedEvaluation["source"]) ?? undefined,
+    jobTextHash: row.job_text_hash ?? undefined,
   };
 }
 
@@ -227,8 +239,8 @@ export function dbGetById(id: string): SavedEvaluation | undefined {
 }
 
 const INSERT_SQL = `INSERT OR REPLACE INTO evaluations
-  (id, saved_at, job_snippet, evaluation, tags, starred, title, job_url, upwork_job_id, budget, duration, skills, source)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+  (id, saved_at, job_snippet, evaluation, tags, starred, title, job_url, upwork_job_id, budget, duration, skills, source, quick_cash_score, job_text_hash)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
 function entryParams(e: SavedEvaluation) {
   return [
@@ -237,6 +249,7 @@ function entryParams(e: SavedEvaluation) {
     e.title ?? null, e.jobUrl ?? null, e.upworkJobId ?? null,
     e.budget ?? null, e.duration ?? null,
     e.skills ? JSON.stringify(e.skills) : null, e.source ?? null,
+    e.evaluation.quick_cash_score ?? null, e.jobTextHash ?? null,
   ];
 }
 
@@ -283,6 +296,20 @@ export function dbFindByUpworkJobId(upworkJobId: string): SavedEvaluation | unde
   const db = getDb();
   if (!db) return undefined;
   const row = db.prepare("SELECT * FROM evaluations WHERE upwork_job_id = ? LIMIT 1").get(upworkJobId) as EvalRow | undefined;
+  return row ? rowToEntry(row) : undefined;
+}
+
+export function dbFindByJobTextHash(hash: string): SavedEvaluation | undefined {
+  ensureBackend();
+  if (_mode === "memory") {
+    for (const e of Array.from(memEvaluations.values())) {
+      if (e.jobTextHash && e.jobTextHash === hash) return e;
+    }
+    return undefined;
+  }
+  const db = getDb();
+  if (!db) return undefined;
+  const row = db.prepare("SELECT * FROM evaluations WHERE job_text_hash = ? LIMIT 1").get(hash) as EvalRow | undefined;
   return row ? rowToEntry(row) : undefined;
 }
 
@@ -413,4 +440,70 @@ export function dbGetAllEvaluationUpworkJobIds(): string[] {
     .prepare("SELECT DISTINCT upwork_job_id FROM evaluations WHERE upwork_job_id IS NOT NULL")
     .all() as Array<{ upwork_job_id: string }>;
   return rows.map((r) => r.upwork_job_id);
+}
+
+export function dbGetQuickCashJobs(options?: {
+  minScore?: number;
+  search?: string;
+  starred?: boolean;
+  limit?: number;
+}): SavedEvaluation[] {
+  ensureBackend();
+
+  if (_mode === "memory") {
+    let entries = Array.from(memEvaluations.values());
+    entries.sort((a, b) => {
+      const sa = (a.evaluation as { quick_cash_score?: number }).quick_cash_score ?? 0;
+      const sb = (b.evaluation as { quick_cash_score?: number }).quick_cash_score ?? 0;
+      return sb - sa;
+    });
+    if (options?.minScore !== undefined) {
+      entries = entries.filter((e) => {
+        const score = (e.evaluation as { quick_cash_score?: number }).quick_cash_score ?? 0;
+        return score >= (options.minScore ?? 0);
+      });
+    }
+    if (options?.search) {
+      const q = options.search.toLowerCase();
+      entries = entries.filter((e) =>
+        `${e.jobSnippet ?? ""}\n${e.title ?? ""}`.toLowerCase().includes(q)
+      );
+    }
+    if (options?.starred !== undefined) {
+      entries = entries.filter((e) => e.starred === options.starred);
+    }
+    if (options?.limit) entries = entries.slice(0, options.limit);
+    return entries;
+  }
+
+  const db = getDb();
+  if (!db) return [];
+
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+
+  if (options?.minScore !== undefined) {
+    conditions.push("quick_cash_score >= ?");
+    params.push(options.minScore);
+  }
+  if (options?.search) {
+    conditions.push("(job_snippet LIKE ? OR title LIKE ?)");
+    params.push(`%${options.search}%`, `%${options.search}%`);
+  }
+  if (options?.starred !== undefined) {
+    conditions.push("starred = ?");
+    params.push(options.starred ? 1 : 0);
+  }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  const limitClause = options?.limit ? `LIMIT ${options.limit}` : "";
+  const sql = `
+    SELECT * FROM evaluations
+    ${where}
+    ORDER BY COALESCE(quick_cash_score, 0) DESC
+    ${limitClause}
+  `;
+
+  const rows = db.prepare(sql).all(...params) as EvalRow[];
+  return rows.map(rowToEntry);
 }

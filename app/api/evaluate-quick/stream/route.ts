@@ -13,7 +13,8 @@ type EvalJobRecord = {
 
 function getEvalJobs(): Map<string, EvalJobRecord> {
   const g = globalThis as unknown as { __upworkQuickEvalJobs?: Map<string, EvalJobRecord> };
-  return g.__upworkQuickEvalJobs ?? new Map();
+  if (!g.__upworkQuickEvalJobs) g.__upworkQuickEvalJobs = new Map<string, EvalJobRecord>();
+  return g.__upworkQuickEvalJobs;
 }
 
 export const dynamic = "force-dynamic";

@@ -1,13 +1,12 @@
-import type { ParsedJob, EvaluationResultAny, EvalMode } from "@/types";
+import type { ParsedJob, EvaluationResultQuickCash, SavedEvaluation } from "@/types";
 
-export type { EvalMode };
 export type StartResp = { jobId?: string; error?: string };
 export type PollResp = {
   jobId: string;
   status: "queued" | "running" | "done" | "error";
   error?: string;
   jobTextUsed?: string;
-  result?: EvaluationResultAny;
+  result?: EvaluationResultQuickCash;
 };
 
 async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
@@ -19,10 +18,6 @@ async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
     );
   }
   return data as T;
-}
-
-function evalEndpoint(mode: EvalMode): string {
-  return mode === "quick_cash" ? "/api/evaluate-quick" : "/api/evaluate";
 }
 
 export async function parseJobs(rawText: string): Promise<ParsedJob[]> {
@@ -37,16 +32,24 @@ export async function parseJobs(rawText: string): Promise<ParsedJob[]> {
   return data.jobs;
 }
 
+export async function fetchPendingJobText(id: string): Promise<string> {
+  const data = await apiFetch<{ jobText?: string; error?: string }>(
+    `/api/extension/pending?id=${encodeURIComponent(id)}`,
+  );
+  if (typeof data.jobText !== "string") {
+    throw new Error(data.error ?? "Job-Text nicht gefunden.");
+  }
+  return data.jobText;
+}
+
 export async function startEval(
-  mode: EvalMode,
   jobText: string,
   meta: Record<string, unknown>,
-  options?: { jobType?: string; offerTemplate?: string },
 ): Promise<string> {
-  const data = await apiFetch<StartResp>(evalEndpoint(mode), {
+  const data = await apiFetch<StartResp>("/api/evaluate-quick", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ async: true, jobText, meta, jobType: options?.jobType, offerTemplate: options?.offerTemplate }),
+    body: JSON.stringify({ async: true, jobText, meta }),
   });
   if (typeof data.jobId !== "string") {
     throw new Error(data.error ?? "Konnte Bewertung nicht starten.");
@@ -54,20 +57,19 @@ export async function startEval(
   return data.jobId;
 }
 
-export async function pollEval(mode: EvalMode, jobId: string): Promise<PollResp> {
+export async function pollEval(jobId: string): Promise<PollResp> {
   return apiFetch<PollResp>(
-    `${evalEndpoint(mode)}?jobId=${encodeURIComponent(jobId)}`,
+    `/api/evaluate-quick?jobId=${encodeURIComponent(jobId)}`,
     { method: "GET" },
   );
 }
 
 export function streamEval(
-  mode: EvalMode,
   jobId: string,
   onUpdate: (data: PollResp) => void,
   onDone: () => void,
 ): () => void {
-  const url = `${evalEndpoint(mode)}/stream?jobId=${encodeURIComponent(jobId)}`;
+  const url = `/api/evaluate-quick/stream?jobId=${encodeURIComponent(jobId)}`;
   const es = new EventSource(url);
   es.onmessage = (e) => {
     try {
@@ -86,14 +88,49 @@ export function streamEval(
   return () => es.close();
 }
 
-export async function fetchFeed(url: string): Promise<ParsedJob[]> {
-  const data = await apiFetch<{ jobs?: ParsedJob[]; error?: string }>("/api/feed", {
+export async function fetchEvaluations(options?: {
+  minScore?: number;
+  search?: string;
+  starred?: boolean;
+}): Promise<SavedEvaluation[]> {
+  const params = new URLSearchParams();
+  if (options?.minScore !== undefined) params.set("minScore", String(options.minScore));
+  if (options?.search) params.set("search", options.search);
+  if (options?.starred !== undefined) params.set("starred", String(options.starred));
+  const qs = params.toString();
+  const data = await apiFetch<{ entries?: SavedEvaluation[] }>(
+    `/api/evaluations${qs ? `?${qs}` : ""}`,
+  );
+  return data.entries ?? [];
+}
+
+export async function deleteEvaluation(id: string): Promise<void> {
+  await apiFetch("/api/evaluations", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids: [id] }),
+  });
+}
+
+export async function deleteManyEvaluations(ids: string[]): Promise<void> {
+  await apiFetch("/api/evaluations", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids }),
+  });
+}
+
+export async function generateCoverLetter(
+  evaluationId: string,
+  options?: { hourlyRate?: string; tone?: string },
+): Promise<string> {
+  const data = await apiFetch<{ offer?: string; error?: string }>("/api/generate-offer", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url }),
+    body: JSON.stringify({ evaluationId, ...options }),
   });
-  if (!Array.isArray(data.jobs)) {
-    throw new Error(data.error ?? "Feed-Abruf fehlgeschlagen.");
+  if (typeof data.offer !== "string") {
+    throw new Error(data.error ?? "Cover Letter konnte nicht generiert werden.");
   }
-  return data.jobs;
+  return data.offer;
 }

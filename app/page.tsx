@@ -1,593 +1,416 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
-import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
-import { JobForm } from "@/components/JobForm";
-import { JobRunCard } from "@/components/JobRunCard";
-import type { JobRun } from "@/components/JobRunCard";
-import { useEvaluationHistory } from "@/hooks/useEvaluationHistory";
-import { useSeenJobs } from "@/hooks/useSeenJobs";
-import { normalizeJobText } from "@/lib/normalizeJobInput";
-import { splitJobPostings } from "@/lib/splitJobs";
-import { extractUpworkJobId } from "@/lib/upwork-job-id";
-import { parseJobs, startEval, pollEval, streamEval } from "@/lib/api-client";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
+import type { ParsedJob, EvaluationResultQuickCash } from "@/types";
+import { parseJobs, fetchPendingJobText, startEval, pollEval, streamEval } from "@/lib/api-client";
 import type { PollResp } from "@/lib/api-client";
 import { POLL_INTERVAL_MS, POLL_TIMEOUT_MS, CONCURRENCY } from "@/lib/constants";
-import type { EvaluationResultAny, ParsedJob } from "@/types";
-import type { JobType } from "@/lib/eval-prompts";
-import { useOfferTemplates } from "@/hooks/useOfferTemplates";
-import { FeedRefreshButton } from "@/components/FeedRefreshButton";
+import BatchProgress from "@/components/BatchProgress";
+import ResultsTable from "@/components/ResultsTable";
 
-function makeRunId(): string {
+// ── Types ──
+
+type JobRunStatus = "pending" | "running" | "done" | "error" | "skipped";
+
+interface JobRun {
+  id: string;
+  job: ParsedJob;
+  status: JobRunStatus;
+  result?: EvaluationResultQuickCash;
+  error?: string;
+}
+
+type BatchPhase = "idle" | "loading" | "parsing" | "running" | "done" | "error";
+
+interface BatchState {
+  phase: BatchPhase;
+  runs: JobRun[];
+  errorMsg?: string;
+}
+
+// ── Helpers ──
+
+function makeId(): string {
   return typeof crypto !== "undefined" && crypto.randomUUID
     ? crypto.randomUUID()
     : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-function waitForVisible(): Promise<void> {
+function waitVisible(): Promise<void> {
   if (typeof document === "undefined" || !document.hidden) return Promise.resolve();
   return new Promise((resolve) => {
-    const handler = () => {
-      if (!document.hidden) {
-        document.removeEventListener("visibilitychange", handler);
-        resolve();
-      }
-    };
+    const handler = () => { if (!document.hidden) { document.removeEventListener("visibilitychange", handler); resolve(); } };
     document.addEventListener("visibilitychange", handler);
   });
 }
 
-function createForegroundTimer() {
-  let elapsed = 0;
-  let lastTick = Date.now();
-  let hidden = typeof document !== "undefined" && document.hidden;
-
-  const handler = () => {
-    if (!hidden) elapsed += Date.now() - lastTick;
-    lastTick = Date.now();
-    hidden = document.hidden;
-  };
-
-  if (typeof document !== "undefined") {
-    document.addEventListener("visibilitychange", handler);
+async function pollUntilDone(
+  jobId: string,
+  signal: AbortSignal,
+): Promise<PollResp> {
+  const deadline = Date.now() + POLL_TIMEOUT_MS;
+  while (Date.now() < deadline && !signal.aborted) {
+    await waitVisible();
+    if (signal.aborted) break;
+    const resp = await pollEval(jobId);
+    if (resp.status === "done" || resp.status === "error") return resp;
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
   }
-
-  return {
-    foregroundMs: () => {
-      if (!hidden) elapsed += Date.now() - lastTick;
-      lastTick = Date.now();
-      return elapsed;
-    },
-    dispose: () => {
-      if (typeof document !== "undefined") {
-        document.removeEventListener("visibilitychange", handler);
-      }
-    },
-  };
+  return { jobId, status: "error", error: "Timeout beim Warten auf Ergebnis." };
 }
 
-export default function HomePageWrapper() {
+// ── BatchEvaluator ──
+
+function BatchEvaluator({ onBatchDone }: { onBatchDone: () => void }) {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const [state, setState] = useState<BatchState>({ phase: "idle", runs: [] });
+  const abortRef = useRef<AbortController | null>(null);
+
+  const autoEvalId = searchParams.get("autoEvalId");
+
+  // Auto-trigger when extension opens page with autoEvalId
+  useEffect(() => {
+    if (autoEvalId && state.phase === "idle") {
+      runBatch(autoEvalId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoEvalId]);
+
+  const runBatch = useCallback(async (pendingId: string) => {
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+
+    setState({ phase: "loading", runs: [] });
+
+    try {
+      // 1. Load raw text from pending store
+      const rawText = await fetchPendingJobText(pendingId);
+
+      // 2. Parse jobs
+      setState({ phase: "parsing", runs: [] });
+      const parsed = await parseJobs(rawText);
+      if (parsed.length === 0) {
+        setState({ phase: "error", runs: [], errorMsg: "Keine Jobs im Text gefunden." });
+        return;
+      }
+
+      // 3. Dedup: load known upworkJobIds from DB
+      const knownIds = new Set<string>();
+      try {
+        const resp = await fetch("/api/evaluations?minScore=0");
+        const data = await resp.json() as { entries?: Array<{ upworkJobId?: string }> };
+        (data.entries ?? []).forEach((e) => { if (e.upworkJobId) knownIds.add(e.upworkJobId); });
+      } catch { /* best-effort */ }
+
+      // 4. Build runs, mark already-seen as skipped
+      const runs: JobRun[] = parsed.slice(0, 50).map((job) => {
+        const uid = job.jobUrl?.match(/~(\d{10,})/)?.[1];
+        const skipped = !!(uid && knownIds.has(uid));
+        return { id: makeId(), job, status: skipped ? "skipped" : "pending" };
+      });
+
+      setState({ phase: "running", runs });
+
+      // 5. Concurrent evaluation
+      const pending = runs.filter((r) => r.status === "pending");
+      const queue = [...pending];
+
+      const updateRun = (id: string, patch: Partial<JobRun>) => {
+        setState((prev) => ({
+          ...prev,
+          runs: prev.runs.map((r) => r.id === id ? { ...r, ...patch } : r),
+        }));
+      };
+
+      const evalOne = async (run: JobRun) => {
+        updateRun(run.id, { status: "running" });
+        try {
+          const meta: Record<string, unknown> = {
+            source: run.job.source,
+            title: run.job.title,
+            jobUrl: run.job.jobUrl,
+            budget: run.job.budget,
+            duration: run.job.duration,
+            skills: run.job.skills,
+            contractorTier: run.job.contractorTier,
+          };
+
+          let done = false;
+
+          // Try SSE stream first
+          const jobId = await startEval(run.job.jobText, meta);
+
+          await new Promise<void>((resolve) => {
+            const stopStream = streamEval(
+              jobId,
+              (data) => {
+                if (data.status === "done" && data.result) {
+                  updateRun(run.id, { status: "done", result: data.result as EvaluationResultQuickCash });
+                  done = true;
+                  resolve();
+                } else if (data.status === "error") {
+                  updateRun(run.id, { status: "error", error: data.error ?? "Fehler" });
+                  done = true;
+                  resolve();
+                }
+              },
+              resolve,
+            );
+            ctrl.signal.addEventListener("abort", () => { stopStream(); resolve(); });
+          });
+
+          // Fallback polling if SSE gave no result — reuse same jobId, don't start a new eval
+          if (!done) {
+            const resp = await pollUntilDone(jobId, ctrl.signal);
+            if (resp.status === "done" && resp.result) {
+              updateRun(run.id, { status: "done", result: resp.result as EvaluationResultQuickCash });
+            } else {
+              updateRun(run.id, { status: "error", error: resp.error ?? "Fehler" });
+            }
+          }
+        } catch (e) {
+          if (!ctrl.signal.aborted) {
+            updateRun(run.id, { status: "error", error: e instanceof Error ? e.message : "Fehler" });
+          }
+        }
+      }
+
+      // Run with concurrency limit
+      let idx = 0;
+      const worker = async () => {
+        while (idx < queue.length && !ctrl.signal.aborted) {
+          const run = queue[idx++];
+          await evalOne(run);
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, worker));
+
+      setState((prev) => ({ ...prev, phase: "done" }));
+
+      // Clear URL param after done
+      router.replace("/?tab=eval", { scroll: false });
+
+      // Notify parent to switch to results after 2s
+      setTimeout(() => onBatchDone(), 2000);
+
+    } catch (e) {
+      if (!ctrl.signal.aborted) {
+        setState({
+          phase: "error", runs: [],
+          errorMsg: e instanceof Error ? e.message : "Unbekannter Fehler.",
+        });
+      }
+    }
+  }, [router, onBatchDone]);
+
+  const { phase, runs, errorMsg } = state;
+  const done = runs.filter((r) => r.status === "done").length;
+  const skipped = runs.filter((r) => r.status === "skipped").length;
+  const errors = runs.filter((r) => r.status === "error").length;
+
+  // ── Idle state ──
+  if (phase === "idle") {
+    return (
+      <div className="flex flex-col items-center justify-center py-16 text-center space-y-4">
+        <div className="text-5xl">🔌</div>
+        <h2 className="text-xl font-semibold text-gray-800 dark:text-white">
+          Chrome Extension verbinden
+        </h2>
+        <p className="text-gray-500 dark:text-gray-400 max-w-md text-sm">
+          Öffne Upwork Search, klicke im Extension-Popup auf{" "}
+          <strong>&quot;Quick Cash Evaluate&quot;</strong> — die Jobs werden hier automatisch bewertet.
+        </p>
+        <p className="text-xs text-gray-400">
+          Bis zu 50 Jobs pro Batch · Duplikate werden automatisch übersprungen
+        </p>
+      </div>
+    );
+  }
+
+  // ── Loading / parsing ──
+  if (phase === "loading" || phase === "parsing") {
+    return (
+      <div className="flex flex-col items-center justify-center py-16 space-y-3">
+        <svg className="animate-spin h-8 w-8 text-emerald-500" viewBox="0 0 24 24" fill="none">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+        </svg>
+        <p className="text-gray-500 text-sm">{phase === "loading" ? "Jobs werden geladen…" : "Jobs werden verarbeitet…"}</p>
+      </div>
+    );
+  }
+
+  // ── Error ──
+  if (phase === "error") {
+    return (
+      <div className="flex flex-col items-center justify-center py-16 space-y-3 text-center">
+        <p className="text-red-500 font-medium">{errorMsg ?? "Fehler"}</p>
+        <button
+          onClick={() => setState({ phase: "idle", runs: [] })}
+          className="text-sm text-gray-500 hover:text-gray-700 underline"
+        >
+          Zurücksetzen
+        </button>
+      </div>
+    );
+  }
+
+  // ── Running / Done ──
   return (
-    <Suspense>
-      <HomePage />
-    </Suspense>
+    <div className="space-y-6">
+      <BatchProgress total={runs.length} done={done} skipped={skipped} errors={errors} />
+
+      {phase === "done" && (
+        <div className="text-center py-3">
+          <p className="text-emerald-600 dark:text-emerald-400 font-medium text-sm">
+            ✓ Batch abgeschlossen — {done} neue Bewertungen gespeichert
+          </p>
+          <button
+            onClick={onBatchDone}
+            className="mt-2 text-sm text-blue-500 hover:underline"
+          >
+            → Zu den Ergebnissen
+          </button>
+        </div>
+      )}
+
+      <div className="space-y-2">
+        {runs.map((run) => (
+          <div
+            key={run.id}
+            className={`rounded-lg border px-4 py-3 text-sm flex items-start gap-3 ${
+              run.status === "done"
+                ? "border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/20"
+                : run.status === "error"
+                ? "border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/20"
+                : run.status === "skipped"
+                ? "border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 opacity-60"
+                : run.status === "running"
+                ? "border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/20"
+                : "border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800"
+            }`}
+          >
+            {/* Status icon */}
+            <span className="flex-shrink-0 mt-0.5">
+              {run.status === "done" && <span className="text-emerald-500">✓</span>}
+              {run.status === "error" && <span className="text-red-500">✕</span>}
+              {run.status === "skipped" && <span className="text-gray-400">–</span>}
+              {run.status === "running" && (
+                <svg className="animate-spin h-4 w-4 text-blue-500" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                </svg>
+              )}
+              {run.status === "pending" && <span className="text-gray-300">○</span>}
+            </span>
+
+            {/* Content */}
+            <div className="flex-1 min-w-0">
+              <p className="font-medium text-gray-800 dark:text-gray-200 truncate">
+                {run.job.title ?? run.job.jobText.slice(0, 60)}
+              </p>
+              {run.status === "done" && run.result && (
+                <div className="flex gap-3 mt-0.5 text-xs text-gray-500">
+                  <span className={`font-bold ${
+                    run.result.quick_cash_score >= 80 ? "text-emerald-600" :
+                    run.result.quick_cash_score >= 70 ? "text-yellow-600" : "text-orange-500"
+                  }`}>
+                    Score: {run.result.quick_cash_score}
+                  </span>
+                  {run.result.effort && <span>⏱ {run.result.effort}</span>}
+                  {run.job.budget && <span>💰 {run.job.budget}</span>}
+                </div>
+              )}
+              {run.status === "skipped" && <p className="text-xs text-gray-400">Bereits bewertet</p>}
+              {run.status === "error" && <p className="text-xs text-red-500">{run.error}</p>}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
-function HomePage() {
-  const router = useRouter();
+// ── Main Page ──
+
+type Tab = "eval" | "results";
+
+function AppContent() {
   const searchParams = useSearchParams();
-  const autoEvalTriggered = useRef(false);
-  const [loading, setLoading] = useState(false);
-  const [draftJobText, setDraftJobText] = useState("");
-  const [runs, setRuns] = useState<JobRun[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [toastVisible, setToastVisible] = useState(false);
-  const [toastMessage, setToastMessage] = useState("Gespeichert");
-  const [skippedCount, setSkippedCount] = useState(0);
+  const router = useRouter();
+  const tabParam = searchParams.get("tab");
+  const [activeTab, setActiveTab] = useState<Tab>(
+    tabParam === "results" ? "results" : "eval",
+  );
 
-  const { save, saveMany } = useEvaluationHistory();
-  const { isSeen, markSeen, refresh: refreshSeen, ready: seenReady } = useSeenJobs();
-  const { templates: offerTemplates, getById: getTemplateById } = useOfferTemplates();
-
-  const goHistory = useCallback(() => router.push("/history"), [router]);
-  useKeyboardShortcuts(useMemo(() => ({ "ctrl+h": goHistory }), [goHistory]));
-
-  useEffect(() => {
-    if (!toastVisible) return;
-    const t = window.setTimeout(() => setToastVisible(false), 2000);
-    return () => window.clearTimeout(t);
-  }, [toastVisible]);
-
-  function showToast(message: string) {
-    setToastMessage(message);
-    setToastVisible(true);
+  function switchTab(tab: Tab) {
+    setActiveTab(tab);
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("tab", tab);
+    params.delete("autoEvalId");
+    router.replace(`/?${params.toString()}`, { scroll: false });
   }
-
-  const [currentJobType, setCurrentJobType] = useState<JobType>("Automatisch");
-  const [currentOfferTemplate, setCurrentOfferTemplate] = useState<string | undefined>();
-  const [currentMode, setCurrentMode] = useState<"sidehustle" | "quick_cash">("sidehustle");
-
-  async function handleSubmit(
-    jobText: string,
-    jobType: JobType = "Automatisch",
-    offerTemplateId?: string,
-    mode: "sidehustle" | "quick_cash" = "sidehustle",
-  ) {
-    setCurrentMode(mode);
-    setCurrentJobType(jobType);
-    const tpl = offerTemplateId ? getTemplateById(offerTemplateId) : undefined;
-    setCurrentOfferTemplate(tpl?.content);
-    setError(null);
-    setRuns([]);
-    setSkippedCount(0);
-
-    // Important: ensure seen set is loaded before dedup, otherwise auto-import runs can re-evaluate duplicates.
-    if (!seenReady) {
-      await refreshSeen();
-    }
-
-    let parsedJobs: ParsedJob[];
-    try {
-      parsedJobs = await parseJobs(jobText);
-    } catch {
-      const rawParts = splitJobPostings(jobText);
-      const jobs = rawParts
-        .map((p) => normalizeJobText(p))
-        .filter((t) => t.length > 0);
-      parsedJobs = jobs.map((t): ParsedJob => ({ source: "text", jobText: t }));
-    }
-
-    if (parsedJobs.length === 0) {
-      setError(
-        "Bitte mindestens einen Job-Text einfügen. Wenn du aus dem Feed kopierst: für Volltext Job öffnen (Detailseite) und dort Titel + Beschreibung kopieren.",
-      );
-      return;
-    }
-
-    const totalBefore = parsedJobs.length;
-    // First: dedup within the current input (same job appearing twice in a feed/modal export)
-    const seenInBatch = new Set<string>();
-    parsedJobs = parsedJobs.filter((j) => {
-      const upworkId = extractUpworkJobId(j.jobUrl ?? "") ?? extractUpworkJobId(j.jobText);
-      const key = upworkId ? `id:${upworkId}` : `hash:${j.jobText.toLowerCase().replace(/\s+/g, " ").trim()}`;
-      if (seenInBatch.has(key)) return false;
-      seenInBatch.add(key);
-      return true;
-    });
-
-    // Second: global dedup (local + server seen set)
-    parsedJobs = parsedJobs.filter((j) => !isSeen(j.jobText, j.jobUrl));
-    const skipped = totalBefore - parsedJobs.length;
-    setSkippedCount(skipped);
-
-    if (parsedJobs.length === 0) {
-      setError(
-        `Alle ${totalBefore} Jobs wurden bereits bewertet. Neue Jobs einfügen um fortzufahren.`,
-      );
-      return;
-    }
-
-    const initialRuns: JobRun[] = parsedJobs.map((j) => ({
-      id: makeRunId(),
-      jobText: j.jobText,
-      mode,
-      title: j.title,
-      postedOn: j.postedOn,
-      jobType: j.jobType,
-      budget: j.budget,
-      duration: j.duration,
-      contractorTier: j.contractorTier,
-      skills: j.skills,
-      feedHasMoreToggle: j.feedHasMoreToggle,
-      likelyTruncated: j.likelyTruncated,
-      descriptionCharLength: j.descriptionCharLength,
-      jobTextCharLength: j.jobTextCharLength,
-      wasTrimmed: j.wasTrimmed,
-      jobUrl: j.jobUrl,
-      source: j.source,
-      status: "pending",
-    }));
-    setRuns(initialRuns);
-    setLoading(true);
-
-    try {
-      const startAndPollOne = async (i: number) => {
-        setRuns((prev) =>
-          prev.map((r, j) => (j === i ? { ...r, status: "loading" as const } : r)),
-        );
-
-        const run = initialRuns[i];
-        const runMode = run.mode ?? "sidehustle";
-        const jobId = await startEval(runMode, run.jobText, {
-          mode: run.mode,
-          source: run.source,
-          feedHasMoreToggle: run.feedHasMoreToggle,
-          likelyTruncated: run.likelyTruncated,
-          descriptionCharLength: run.descriptionCharLength,
-          jobTextCharLength: run.jobTextCharLength,
-          wasTrimmed: run.wasTrimmed,
-          title: run.title,
-          jobUrl: run.jobUrl,
-          postedOn: run.postedOn,
-          jobType: run.jobType,
-          budget: run.budget,
-          duration: run.duration,
-          contractorTier: run.contractorTier,
-          skillsCount: run.skills?.length ?? 0,
-        }, run.mode === "quick_cash"
-          ? undefined
-          : { jobType: currentJobType !== "Automatisch" ? currentJobType : undefined, offerTemplate: currentOfferTemplate });
-
-        setRuns((prev) =>
-          prev.map((r, j) => (j === i ? { ...r, evaluationJobId: jobId } : r)),
-        );
-
-        const applyResult = (p: PollResp) => {
-          if (p.status === "done" && p.result) {
-            markSeen([{ jobText: run.jobText, jobUrl: run.jobUrl }]);
-            setRuns((prev) =>
-              prev.map((r, j) =>
-                j === i
-                  ? { ...r, status: "done" as const, result: p.result, jobText: typeof p.jobTextUsed === "string" && p.jobTextUsed.length > 0 ? p.jobTextUsed : r.jobText }
-                  : r,
-              ),
-            );
-            return true;
-          }
-          if (p.status === "error") {
-            setRuns((prev) =>
-              prev.map((r, j) =>
-                j === i
-                  ? { ...r, status: "error" as const, error: typeof p.error === "string" && p.error.length > 0 ? p.error : "Bewertung fehlgeschlagen." }
-                  : r,
-              ),
-            );
-            return true;
-          }
-          return false;
-        };
-
-        // Try SSE first, fallback to polling
-        const sseSupported = typeof EventSource !== "undefined";
-        if (sseSupported) {
-          const timer = createForegroundTimer();
-          await new Promise<void>((resolve) => {
-            let fallbackTriggered = false;
-            const unsub = streamEval(runMode, jobId, (data) => {
-              if (applyResult(data)) { timer.dispose(); resolve(); }
-            }, () => {
-              if (!fallbackTriggered) {
-                fallbackTriggered = true;
-                timer.dispose();
-                resolve();
-              }
-            });
-            const checkTimeout = () => {
-              if (timer.foregroundMs() >= POLL_TIMEOUT_MS) {
-                unsub();
-                if (!fallbackTriggered) { fallbackTriggered = true; timer.dispose(); resolve(); }
-              } else {
-                setTimeout(checkTimeout, 2000);
-              }
-            };
-            setTimeout(checkTimeout, 2000);
-          });
-          const currentRuns = await new Promise<JobRun[]>((res) => setRuns((prev) => { res(prev); return prev; }));
-          const cur = currentRuns[i];
-          if (cur && (cur.status === "done" || cur.status === "error")) return;
-        }
-
-        // Polling fallback — only count foreground time, poll immediately on tab focus
-        const timer = createForegroundTimer();
-        while (timer.foregroundMs() < POLL_TIMEOUT_MS) {
-          await waitForVisible();
-          const p = await pollEval(runMode, jobId);
-          if (applyResult(p)) { timer.dispose(); return; }
-          await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-        }
-        timer.dispose();
-
-        setRuns((prev) =>
-          prev.map((r, j) =>
-            j === i
-              ? { ...r, status: "error" as const, error: "Timeout beim Warten auf die Bewertung. Bitte erneut versuchen." }
-              : r,
-          ),
-        );
-      };
-
-      let cursor = 0;
-      const workers = Array.from({ length: Math.min(CONCURRENCY, initialRuns.length) }).map(
-        async () => {
-          while (cursor < initialRuns.length) {
-            const i = cursor++;
-            try {
-              await startAndPollOne(i);
-            } catch (err) {
-              setRuns((prev) =>
-                prev.map((r, j) =>
-                  j === i
-                    ? {
-                        ...r,
-                        status: "error" as const,
-                        error:
-                          err && typeof err === "object" && "message" in err
-                            ? String((err as { message: unknown }).message)
-                            : "Bewertung fehlgeschlagen.",
-                      }
-                    : r,
-                ),
-              );
-            }
-          }
-        },
-      );
-
-      await Promise.all(workers);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  function bestEffortJobUrlFromText(text: string): string | undefined {
-    const urlLine = text.match(/(?:^|\n)\s*URL:\s*(https?:\/\/[^\s]+)\s*(?:\n|$)/i)?.[1]?.trim();
-    if (urlLine?.includes("upwork.com")) return urlLine;
-    const direct = text.match(/https?:\/\/www\.upwork\.com\/jobs\/~\d{10,}/)?.[0]?.trim();
-    if (direct) return direct;
-    const id = extractUpworkJobId(text);
-    return id ? `https://www.upwork.com/jobs/~${id}` : undefined;
-  }
-
-  function bestEffortTitleFromText(text: string): string | undefined {
-    const fromTitleLine = text.match(/(?:^|\n)\s*TITLE:\s*(.+)\s*(?:\n|$)/i)?.[1]?.trim();
-    const candidate = (fromTitleLine || "").replace(/^\*+|\*+$/g, "").trim();
-    if (candidate.length >= 6) return candidate.slice(0, 180);
-    const lines = text
-      .split(/\r?\n/)
-      .map((l) => l.trim())
-      .filter(Boolean);
-    const first = lines.find((l) => !/^(URL|POSTED|TYPE|LEVEL|DURATION|BUDGET|SKILLS|DESCRIPTION)\s*:/i.test(l));
-    if (!first) return undefined;
-    const cleaned = first.replace(/^\*+|\*+$/g, "").trim();
-    return cleaned.length >= 6 ? cleaned.slice(0, 180) : undefined;
-  }
-
-  function handleSaveOne(run: JobRun) {
-    if (!run.result || !run.jobText.trim()) return;
-    const jobUrl = run.jobUrl || bestEffortJobUrlFromText(run.jobText);
-    const title = run.title || bestEffortTitleFromText(run.jobText);
-    save({
-      jobSnippet: run.jobText,
-      evaluation: run.result,
-      tags: [run.mode === "quick_cash" ? "mode:quick_cash" : "mode:sidehustle"],
-      title,
-      jobUrl,
-      upworkJobId: jobUrl ? extractUpworkJobId(jobUrl) : extractUpworkJobId(run.jobText),
-      budget: run.budget,
-      duration: run.duration,
-      skills: run.skills,
-      source: run.source,
-    });
-    showToast("Gespeichert");
-  }
-
-  function handleSaveAll() {
-    const done = runs.filter(
-      (r): r is JobRun & { result: EvaluationResultAny } =>
-        r.status === "done" && !!r.result,
-    );
-    if (done.length === 0) return;
-    saveMany(
-      done.map((r) => ({
-        jobSnippet: r.jobText,
-        evaluation: r.result,
-        tags: [r.mode === "quick_cash" ? "mode:quick_cash" : "mode:sidehustle"],
-        title: r.title || bestEffortTitleFromText(r.jobText),
-        jobUrl: r.jobUrl || bestEffortJobUrlFromText(r.jobText),
-        upworkJobId: (r.jobUrl ? extractUpworkJobId(r.jobUrl) : undefined) || extractUpworkJobId(r.jobText),
-        budget: r.budget,
-        duration: r.duration,
-        skills: r.skills,
-        source: r.source,
-      })),
-    );
-    showToast(
-      done.length === 1
-        ? "Gespeichert"
-        : `${done.length} Jobs gespeichert`,
-    );
-  }
-
-  async function handleRetry(index: number) {
-    const run = runs[index];
-    if (!run) return;
-    setRuns((prev) =>
-      prev.map((r, j) => (j === index ? { ...r, status: "loading" as const, error: undefined } : r)),
-    );
-    try {
-      const retryMode = run.mode ?? "sidehustle";
-      const jobId = await startEval(retryMode, run.jobText, {
-        mode: retryMode,
-        source: run.source,
-        title: run.title,
-        jobUrl: run.jobUrl,
-      }, retryMode === "quick_cash"
-        ? undefined
-        : { jobType: currentJobType !== "Automatisch" ? currentJobType : undefined, offerTemplate: currentOfferTemplate });
-      setRuns((prev) =>
-        prev.map((r, j) => (j === index ? { ...r, evaluationJobId: jobId } : r)),
-      );
-      const retryTimer = createForegroundTimer();
-      while (retryTimer.foregroundMs() < POLL_TIMEOUT_MS) {
-        await waitForVisible();
-        const p = await pollEval(retryMode, jobId);
-        if (p.status === "done" && p.result) {
-          markSeen([{ jobText: run.jobText, jobUrl: run.jobUrl }]);
-          setRuns((prev) =>
-            prev.map((r, j) =>
-              j === index ? { ...r, status: "done" as const, result: p.result, jobText: typeof p.jobTextUsed === "string" && p.jobTextUsed.length > 0 ? p.jobTextUsed : r.jobText } : r,
-            ),
-          );
-          retryTimer.dispose();
-          return;
-        }
-        if (p.status === "error") {
-          setRuns((prev) =>
-            prev.map((r, j) =>
-              j === index ? { ...r, status: "error" as const, error: typeof p.error === "string" ? p.error : "Bewertung fehlgeschlagen." } : r,
-            ),
-          );
-          retryTimer.dispose();
-          return;
-        }
-        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-      }
-      retryTimer.dispose();
-      setRuns((prev) =>
-        prev.map((r, j) =>
-          j === index ? { ...r, status: "error" as const, error: "Timeout beim Warten auf die Bewertung." } : r,
-        ),
-      );
-    } catch (err) {
-      setRuns((prev) =>
-        prev.map((r, j) =>
-          j === index ? { ...r, status: "error" as const, error: err && typeof err === "object" && "message" in err ? String((err as { message: unknown }).message) : "Bewertung fehlgeschlagen." } : r,
-        ),
-      );
-    }
-  }
-
-  useEffect(() => {
-    if (autoEvalTriggered.current) return;
-    const jobText = searchParams.get("autoEval");
-    const autoEvalId = searchParams.get("autoEvalId");
-    const modeParam = searchParams.get("mode");
-    const mode = modeParam === "quick_cash" ? "quick_cash" : "sidehustle";
-    if (loading) return;
-
-    if (jobText) {
-      autoEvalTriggered.current = true;
-      window.history.replaceState({}, "", "/");
-      setDraftJobText(jobText);
-      handleSubmit(jobText, "Automatisch", undefined, mode);
-      return;
-    }
-
-    if (autoEvalId) {
-      autoEvalTriggered.current = true;
-      window.history.replaceState({}, "", "/");
-      (async () => {
-        try {
-          const res = await fetch(`/api/extension/pending?id=${encodeURIComponent(autoEvalId)}`);
-          const data = await res.json().catch(() => ({}));
-          if (!res.ok || typeof data?.jobText !== "string") {
-            setError(typeof data?.error === "string" ? data.error : "Konnte Pending-Jobs nicht laden.");
-            return;
-          }
-          setDraftJobText(data.jobText);
-          handleSubmit(data.jobText, "Automatisch", undefined, mode);
-        } catch (e) {
-          setError(e && typeof e === "object" && "message" in e ? String((e as { message: unknown }).message) : "Konnte Pending-Jobs nicht laden.");
-        }
-      })();
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParams]);
-
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const handleFeedJobs = useCallback((feedJobs: ParsedJob[]) => {
-    const newJobs = feedJobs.filter((j) => !isSeen(j.jobText, j.jobUrl));
-    if (newJobs.length === 0) return;
-    const jobText = newJobs.map((j) => j.jobText).join("\n---JOBSPLIT---\n");
-    handleSubmit(jobText, currentJobType, undefined, currentMode);
-  }, [isSeen, currentJobType, currentMode]);
-
-  const doneCount = runs.filter((r) => r.status === "done").length;
 
   return (
-    <div className="space-y-8">
-      <JobForm
-        onSubmit={handleSubmit}
-        loading={loading}
-        offerTemplates={offerTemplates.map((t) => ({ id: t.id, name: t.name }))}
-        value={draftJobText}
-        onChange={setDraftJobText}
-      />
-      <FeedRefreshButton onNewJobs={handleFeedJobs} />
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-950">
+      <div className="max-w-3xl mx-auto px-4 py-8 space-y-6">
 
-      {skippedCount > 0 && (
-        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
-          {skippedCount} bereits bewertete{skippedCount === 1 ? "r Job" : " Jobs"} übersprungen.
+        {/* Header */}
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
+            Quick Cash Evaluator
+          </h1>
+          <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
+            Upwork Jobs schnell auf Quick-Cash-Potenzial bewerten
+          </p>
         </div>
-      )}
 
-      {error && (
-        <div
-          role="alert"
-          className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200"
-        >
-          {error}
+        {/* Tabs */}
+        <div className="flex gap-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-1">
+          <button
+            onClick={() => switchTab("eval")}
+            className={`flex-1 py-2 text-sm font-medium rounded-md transition-colors ${
+              activeTab === "eval"
+                ? "bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm"
+                : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300"
+            }`}
+          >
+            Bewertung
+          </button>
+          <button
+            onClick={() => switchTab("results")}
+            className={`flex-1 py-2 text-sm font-medium rounded-md transition-colors ${
+              activeTab === "results"
+                ? "bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm"
+                : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300"
+            }`}
+          >
+            Ergebnisse
+          </button>
         </div>
-      )}
 
-      {runs.length > 0 && (
-        <div className="space-y-6">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <h2 className="text-lg font-semibold text-white">
-              Ergebnisse{" "}
-              <span className="text-sm font-normal text-muted">
-                ({runs.length} {runs.length === 1 ? "Job" : "Jobs"})
-              </span>
-            </h2>
-            {doneCount > 0 && (
-              <button
-                type="button"
-                onClick={handleSaveAll}
-                className="rounded-lg border border-accent/50 bg-transparent px-4 py-2 text-sm font-semibold text-accent transition hover:bg-accent/10"
-              >
-                Alle in Liste speichern
-              </button>
-            )}
-          </div>
-
-          {/* Batch progress */}
-          {runs.length > 1 && loading && (
-            <div className="rounded-lg border border-white/10 bg-surface/40 p-3">
-              <div className="mb-1.5 flex items-center justify-between text-xs text-muted">
-                <span>{doneCount + runs.filter((r) => r.status === "error").length} von {runs.length} abgeschlossen</span>
-                <span>{doneCount} erfolgreich{runs.filter((r) => r.status === "error").length > 0 ? `, ${runs.filter((r) => r.status === "error").length} fehlgeschlagen` : ""}</span>
-              </div>
-              <div className="h-2 w-full overflow-hidden rounded-full bg-white/10">
-                <div
-                  className="h-full rounded-full bg-accent transition-[width] duration-300"
-                  style={{ width: `${((doneCount + runs.filter((r) => r.status === "error").length) / runs.length) * 100}%` }}
-                />
-              </div>
-            </div>
+        {/* Tab content */}
+        <div>
+          {activeTab === "eval" && (
+            <BatchEvaluator onBatchDone={() => switchTab("results")} />
           )}
-
-          {runs.map((run, index) => (
-            <JobRunCard
-              key={run.id}
-              run={run}
-              index={index}
-              onSave={() => handleSaveOne(run)}
-              onRetry={() => handleRetry(index)}
-            />
-          ))}
+          {activeTab === "results" && (
+            <ResultsTable />
+          )}
         </div>
-      )}
 
-      {toastVisible && (
-        <div
-          role="status"
-          className="fixed bottom-6 right-6 z-50 rounded-lg bg-surface px-4 py-3 text-sm font-medium text-white shadow-lg ring-1 ring-accent/40"
-        >
-          {toastMessage}
-        </div>
-      )}
+      </div>
     </div>
+  );
+}
+
+export default function Home() {
+  return (
+    <Suspense>
+      <AppContent />
+    </Suspense>
   );
 }

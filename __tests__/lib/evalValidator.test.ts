@@ -2,11 +2,9 @@ import { describe, it, expect } from "vitest";
 import {
   stripMarkdownFences,
   isLikelyGerman,
-  hasBadPlaceholders,
-  isSchemaGoodEnough,
   parseJsonStrict,
-  checkSemanticQuality,
-  validateResultDetailed,
+  validateQuickCashResult,
+  validateQuickCashResultDetailed,
 } from "@/lib/eval-validator";
 
 describe("stripMarkdownFences", () => {
@@ -49,57 +47,6 @@ describe("isLikelyGerman", () => {
   });
 });
 
-describe("hasBadPlaceholders", () => {
-  it("detects N/A", () => {
-    expect(hasBadPlaceholders({
-      effort_hours: "N/A",
-      risks: [],
-      steps: [],
-      reasoning: "test",
-    })).toBe(true);
-  });
-
-  it("detects nicht anwendbar", () => {
-    expect(hasBadPlaceholders({
-      effort_hours: "4-8",
-      risks: ["nicht anwendbar"],
-      steps: [],
-      reasoning: "test",
-    })).toBe(true);
-  });
-
-  it("accepts valid content", () => {
-    expect(hasBadPlaceholders({
-      effort_hours: "4-8",
-      risks: ["API could be slow"],
-      steps: ["Check docs"],
-      reasoning: "Looks feasible",
-    })).toBe(false);
-  });
-});
-
-describe("isSchemaGoodEnough", () => {
-  it("rejects too few risks", () => {
-    expect(isSchemaGoodEnough({
-      risks: ["Risk 1"],
-      next_steps: ["1", "2", "3", "4", "5"],
-      clarifying_questions: ["Q1", "Q2", "Q3"],
-      offer_message: "A".repeat(100),
-      reasoning: "A".repeat(30),
-    })).toBe(false);
-  });
-
-  it("accepts valid schema", () => {
-    expect(isSchemaGoodEnough({
-      risks: ["R1", "R2", "R3"],
-      next_steps: ["S1", "S2", "S3", "S4", "S5"],
-      clarifying_questions: ["Q1", "Q2", "Q3"],
-      offer_message: "A".repeat(100),
-      reasoning: "A".repeat(30),
-    })).toBe(true);
-  });
-});
-
 describe("parseJsonStrict", () => {
   it("parses valid JSON", () => {
     const result = parseJsonStrict('{"key": "value"}');
@@ -117,74 +64,64 @@ describe("parseJsonStrict", () => {
   });
 });
 
-describe("checkSemanticQuality", () => {
-  const baseResult = {
-    reasoning: "Dieser Job erfordert eine Landing Page mit Next.js und Tailwind CSS. Das passt zum Profil.",
-    risks: ["Figma-Designs könnten komplex sein", "Stripe braucht Testumgebung", "Responsive Edge-Cases"],
-    overall_score: 8,
-    criteria: { scope_clarity: 8, low_integration_ops_complexity: 7, solo_delivery_fit: 9, ai_coding_fit: 8 },
-  };
+const validQC = {
+  quick_cash_score: 82,
+  confidence: 8,
+  effort: "3-4h",
+  effort_hours: "3-4",
+  why: ["TypeScript-Aufgabe mit klarem Scope", "Passt gut zum Stack"],
+  questions: ["Gibt es bereits Tests?", "Welche Node-Version wird verwendet?"],
+  proposal_de: "Guten Tag, ich habe Ihren Auftrag gelesen und verstehe genau was gebraucht wird. Ich würde das mit TypeScript und React umsetzen und kann in 3-4 Stunden liefern.",
+  red_flags: [],
+  reasoning: "Klarer Auftrag, passt gut zum bestehenden Stack und ist gut umsetzbar.",
+  viable: true,
+  overall_score: 8,
+  steps: ["Feature implementieren", "Tests schreiben"],
+  risks: [],
+};
 
-  it("returns no warnings for good result", () => {
-    const { warnings } = checkSemanticQuality(baseResult, "Build a landing page with Next.js and Tailwind CSS");
-    expect(warnings).toHaveLength(0);
+describe("validateQuickCashResult", () => {
+  it("accepts valid Quick Cash result", () => {
+    const result = validateQuickCashResult(validQC);
+    expect(result).not.toBeNull();
+    expect(result!.quick_cash_score).toBe(82);
   });
 
-  it("warns when reasoning has no job reference", () => {
-    const { warnings } = checkSemanticQuality(
-      { ...baseResult, reasoning: "Das ist ein guter Job und es passt zum Profil." },
-      "Build a complex microservice architecture with Kubernetes",
-    );
-    expect(warnings.some((w) => w.includes("reasoning"))).toBe(true);
+  it("rejects null input", () => {
+    expect(validateQuickCashResult(null)).toBeNull();
   });
 
-  it("warns on numbered risks", () => {
-    const { warnings } = checkSemanticQuality(
-      { ...baseResult, risks: ["Risiko 1: etwas", "Risiko 2: etwas anderes", "Risk 3: noch etwas"] },
-      "Build a landing page with Next.js",
-    );
-    expect(warnings.some((w) => w.includes("nummeriert"))).toBe(true);
+  it("rejects missing quick_cash_score", () => {
+    expect(validateQuickCashResult({ ...validQC, quick_cash_score: undefined })).toBeNull();
   });
 
-  it("warns on score inconsistency (high criteria, low overall)", () => {
-    const { warnings } = checkSemanticQuality(
-      { ...baseResult, overall_score: 3, criteria: { scope_clarity: 9, low_integration_ops_complexity: 9, solo_delivery_fit: 9, ai_coding_fit: 9 } },
-      "Build a landing page",
-    );
-    expect(warnings.some((w) => w.includes("Inkonsistenz"))).toBe(true);
+  it("rejects out-of-range score", () => {
+    expect(validateQuickCashResult({ ...validQC, quick_cash_score: 150 })).toBeNull();
   });
 });
 
-describe("validateResultDetailed", () => {
+describe("validateQuickCashResultDetailed", () => {
   it("returns errors for null input", () => {
-    const result = validateResultDetailed(null);
+    const result = validateQuickCashResultDetailed(null);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.errors.length).toBeGreaterThan(0);
     }
   });
 
-  it("collects multiple errors", () => {
-    const result = validateResultDetailed({
-      viable_build_20h: true,
-      viable_consulting: false,
-      confidence: 7,
-      effort_hours: "4-8",
-      timeline_days: "3-5",
-      price_range: "500-800",
-      overall_score: 7,
-      criteria: { scope_clarity: 8, low_integration_ops_complexity: 7, solo_delivery_fit: 8, ai_coding_fit: 8 },
-      risks: ["R1"],
-      next_steps: ["S1"],
-      clarifying_questions: [],
-      offer_message: "Short",
-      learning_path: [],
-      reasoning: "Kurz",
-      steps: ["Step 1"],
+  it("accepts valid result with no errors", () => {
+    const result = validateQuickCashResultDetailed(validQC);
+    expect(result.ok).toBe(true);
+  });
+
+  it("collects errors for invalid input", () => {
+    const result = validateQuickCashResultDetailed({
+      quick_cash_score: 200,
+      confidence: 15,
     });
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.errors.length).toBeGreaterThanOrEqual(3);
+      expect(result.errors.length).toBeGreaterThanOrEqual(1);
     }
   });
 });

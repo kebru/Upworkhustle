@@ -11,6 +11,9 @@ vi.mock("@/lib/evaluationLogger", () => ({
 
 vi.mock("@/lib/db", () => ({
   dbMarkSeen: vi.fn(),
+  dbInsert: vi.fn(),
+  dbFindByUpworkJobId: vi.fn().mockReturnValue(undefined),
+  dbFindByJobTextHash: vi.fn().mockReturnValue(undefined),
 }));
 
 vi.mock("@/lib/rateLimit", () => ({
@@ -26,7 +29,7 @@ vi.mock("@/lib/eval-cache", () => ({
 
 function makeConfig(overrides?: Partial<EvalEngineConfig>): EvalEngineConfig {
   return {
-    mode: "sidehustle",
+    mode: "quick_cash",
     getSystemPrompt: () => "test system prompt",
     repairPrompt: "repair",
     validate: (parsed) => ({ ok: true, result: parsed }),
@@ -48,10 +51,10 @@ describe("createEvalEngine", () => {
   });
 
   it("uses mode-specific config", () => {
-    const sidehustle = createEvalEngine(makeConfig({ mode: "sidehustle" }));
+    const engineA = createEvalEngine(makeConfig({ globalStoreKey: `__mode_a_${Date.now()}` }));
     const quickCash = createEvalEngine(makeConfig({ mode: "quick_cash" }));
-    expect(sidehustle).not.toBe(quickCash);
-    expect(typeof sidehustle.POST).toBe("function");
+    expect(engineA).not.toBe(quickCash);
+    expect(typeof engineA.POST).toBe("function");
     expect(typeof quickCash.POST).toBe("function");
   });
 

@@ -4,11 +4,13 @@ import { openRouterChat } from "@/lib/llm-client";
 import { buildOfferPrompt } from "@/lib/offer-prompt";
 import { dbGetById } from "@/lib/db";
 import { OFFER_MODEL_DEFAULT } from "@/lib/constants";
+import type { EvaluationResultQuickCash } from "@/types";
 
 const schema = z.union([
   z.object({
     evaluationId: z.string().min(1),
-    offerTemplate: z.string().optional(),
+    hourlyRate: z.string().optional(),
+    tone: z.enum(["direkt", "freundlich", "professionell"]).optional(),
   }),
   z.object({
     jobSnippet: z.string().min(1),
@@ -16,7 +18,8 @@ const schema = z.union([
     title: z.string().optional(),
     budget: z.string().optional(),
     skills: z.array(z.string()).optional(),
-    offerTemplate: z.string().optional(),
+    hourlyRate: z.string().optional(),
+    tone: z.enum(["direkt", "freundlich", "professionell"]).optional(),
   }),
 ]);
 
@@ -43,11 +46,12 @@ export async function POST(req: NextRequest) {
 
   const data = parsed.data;
   let jobText: string;
-  let evaluation: Record<string, unknown>;
+  let evaluation: EvaluationResultQuickCash;
   let title: string | undefined;
   let budget: string | undefined;
   let skills: string[] | undefined;
-  let offerTemplate: string | undefined;
+  const hourlyRate = data.hourlyRate;
+  const tone = data.tone;
 
   if ("evaluationId" in data) {
     const entry = dbGetById(data.evaluationId);
@@ -55,18 +59,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Evaluation nicht gefunden." }, { status: 404 });
     }
     jobText = entry.jobSnippet;
-    evaluation = entry.evaluation as unknown as Record<string, unknown>;
+    evaluation = entry.evaluation as EvaluationResultQuickCash;
     title = entry.title;
     budget = entry.budget;
     skills = entry.skills;
-    offerTemplate = data.offerTemplate;
   } else {
     jobText = data.jobSnippet;
-    evaluation = data.evaluation;
+    evaluation = data.evaluation as unknown as EvaluationResultQuickCash;
     title = data.title;
     budget = data.budget;
     skills = data.skills;
-    offerTemplate = data.offerTemplate;
   }
 
   const model = process.env.OPENROUTER_OFFER_MODEL || OFFER_MODEL_DEFAULT;
@@ -74,14 +76,8 @@ export async function POST(req: NextRequest) {
     process.env.OPENROUTER_MODEL_FALLBACK ||
     process.env.OPENROUTER_MODEL_PRIMARY ||
     model;
-  const messages = buildOfferPrompt({
-    jobText,
-    evaluation: evaluation as unknown as Parameters<typeof buildOfferPrompt>[0]["evaluation"],
-    title,
-    budget,
-    skills,
-    offerTemplate,
-  });
+
+  const messages = buildOfferPrompt({ jobText, evaluation, title, budget, skills, hourlyRate, tone });
 
   const result = await openRouterChat({
     apiKey,
@@ -91,7 +87,6 @@ export async function POST(req: NextRequest) {
     llmParams: { temperature: 0.5, max_tokens: 2048 },
   });
 
-  // If model ID is invalid (400), retry with a more generic fallback model.
   if ((!result.ok || !result.content) && result.status === 400 && fallbackModel !== model) {
     const retry = await openRouterChat({
       apiKey,
@@ -106,7 +101,7 @@ export async function POST(req: NextRequest) {
         { status: 502 },
       );
     }
-    return NextResponse.json({ offerText: retry.content.trim() });
+    return NextResponse.json({ offer: retry.content.trim() });
   }
 
   if (!result.ok || !result.content) {
@@ -116,5 +111,5 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  return NextResponse.json({ offerText: result.content.trim() });
+  return NextResponse.json({ offer: result.content.trim() });
 }

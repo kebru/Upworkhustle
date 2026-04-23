@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { dbGetAll, dbInsert, dbInsertMany, dbDeleteMany } from "@/lib/db";
+import { dbGetQuickCashJobs, dbInsert, dbInsertMany, dbDeleteMany } from "@/lib/db";
 import type { SavedEvaluation } from "@/types";
 
 const insertSchema = z.object({
@@ -30,13 +30,14 @@ const deleteManySchema = z.object({
 export async function GET(req: NextRequest) {
   const params = req.nextUrl.searchParams;
   const search = params.get("search") ?? undefined;
-  const viable = params.get("viable");
   const starred = params.get("starred");
+  const minScoreRaw = params.get("minScore");
+  const minScore = minScoreRaw ? parseInt(minScoreRaw, 10) : undefined;
 
-  const entries = dbGetAll({
+  const entries = dbGetQuickCashJobs({
     search,
-    viable: viable === "true" ? true : viable === "false" ? false : undefined,
     starred: starred === "true" ? true : starred === "false" ? false : undefined,
+    minScore: minScore !== undefined && !isNaN(minScore) ? minScore : undefined,
   });
 
   return NextResponse.json({ entries });

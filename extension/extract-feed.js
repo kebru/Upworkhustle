@@ -22,7 +22,8 @@
     if (fallback.length > 0) tiles.push(...fallback);
   }
 
-  const jobs = tiles.map((tile) => {
+  const MAX_JOBS = 50;
+  const jobs = tiles.slice(0, MAX_JOBS).map((tile) => {
     // Prefer a real job link that points to /jobs/
     const jobLinkEl =
       qs('a[data-test*="job-tile-title-link"][href^="/jobs/"]', tile) ||

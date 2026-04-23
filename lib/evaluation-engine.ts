@@ -1,4 +1,3 @@
-import type { EvalMode } from "@/types";
 import { NextResponse } from "next/server";
 import { extractFromUpworkHtml } from "@/lib/extractUpworkHtml";
 import { looksLikeHtml, normalizeJobText } from "@/lib/normalizeJobInput";
@@ -9,8 +8,9 @@ import type { ChatMessage } from "@/lib/llm-client";
 import { parseJsonStrict, isLikelyGerman } from "@/lib/eval-validator";
 import { getCached, setCache, jobTextHash } from "@/lib/eval-cache";
 import { evaluateRequestSchema } from "@/lib/schemas";
-import { dbMarkSeen } from "@/lib/db";
+import { dbMarkSeen, dbInsert, dbFindByUpworkJobId, dbFindByJobTextHash } from "@/lib/db";
 import { extractUpworkJobId } from "@/lib/upwork-job-id";
+import type { SavedEvaluation, EvaluationResultQuickCash } from "@/types";
 import {
   PRIMARY_MODEL_DEFAULT,
   FALLBACK_MODEL_DEFAULT,
@@ -36,7 +36,7 @@ import {
 
 // ── Types ──
 
-export type EvaluationMode = EvalMode;
+export type EvaluationMode = "quick_cash";
 
 type EvalJobStatus = "queued" | "running" | "done" | "error";
 type EvalJobRecord = {
@@ -76,7 +76,7 @@ type EvalFailure = {
 
 export interface EvalEngineConfig {
   mode: EvaluationMode;
-  getSystemPrompt: (jobType?: string, offerTemplate?: string) => string;
+  getSystemPrompt: () => string;
   repairPrompt: string;
   validate: (parsed: unknown) => { ok: true; result: unknown } | { ok: false; errors: string[] };
   validateLoose: (parsed: unknown) => unknown | null;
@@ -96,8 +96,11 @@ function envInt(name: string, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
-const JOB_TTL_MS = EVAL_JOB_TTL_MS;
-const GC_INTERVAL_MS = EVAL_JOB_GC_INTERVAL_MS;
+function makeId(): string {
+  return typeof crypto !== "undefined" && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
 
 function getOrCreateJobStore(key: string): Map<string, EvalJobRecord> {
   const g = globalThis as unknown as Record<string, Map<string, EvalJobRecord> | undefined>;
@@ -110,20 +113,54 @@ function ensureGc(storeKey: string, timerKey: string) {
   if (!g[timerKey]) {
     g[timerKey] = setInterval(() => {
       const store = getOrCreateJobStore(storeKey);
-      const cutoff = Date.now() - JOB_TTL_MS;
+      const cutoff = Date.now() - EVAL_JOB_TTL_MS;
       store.forEach((rec, id) => {
         if (rec.updatedAt < cutoff && (rec.status === "done" || rec.status === "error")) {
           store.delete(id);
         }
       });
-    }, GC_INTERVAL_MS);
+    }, EVAL_JOB_GC_INTERVAL_MS);
   }
 }
 
-function makeEvalJobId(): string {
-  return typeof crypto !== "undefined" && crypto.randomUUID
-    ? crypto.randomUUID()
-    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+// ── Auto-Save Helper ──
+
+function autoSaveToDB(result: unknown, jobTextUsed: string, logMeta: Record<string, unknown> | undefined): void {
+  try {
+    const r = result as EvaluationResultQuickCash;
+    const upworkJobId =
+      (logMeta && typeof logMeta.jobUrl === "string"
+        ? extractUpworkJobId(String(logMeta.jobUrl))
+        : undefined) ?? extractUpworkJobId(jobTextUsed);
+
+    const hash = jobTextHash(jobTextUsed);
+
+    // Dedup by upworkJobId (URL-based)
+    if (upworkJobId && dbFindByUpworkJobId(upworkJobId)) return;
+
+    // Dedup by job text hash (catches re-evaluations of same text without URL)
+    if (dbFindByJobTextHash(hash)) return;
+
+    const entry: SavedEvaluation = {
+      id: makeId(),
+      savedAt: new Date().toISOString(),
+      jobSnippet: jobTextUsed.slice(0, 500),
+      evaluation: r,
+      tags: [],
+      starred: false,
+      title: logMeta && typeof logMeta.title === "string" ? logMeta.title : undefined,
+      jobUrl: logMeta && typeof logMeta.jobUrl === "string" ? logMeta.jobUrl : undefined,
+      upworkJobId: upworkJobId ?? undefined,
+      budget: logMeta && typeof logMeta.budget === "string" ? logMeta.budget : undefined,
+      duration: logMeta && typeof logMeta.duration === "string" ? logMeta.duration : undefined,
+      skills: logMeta && Array.isArray(logMeta.skills) ? logMeta.skills as string[] : undefined,
+      source: logMeta && (logMeta.source === "upwork_feed" || logMeta.source === "text")
+        ? logMeta.source
+        : undefined,
+      jobTextHash: hash,
+    };
+    dbInsert(entry);
+  } catch { /* best-effort, never block eval result */ }
 }
 
 // ── Engine Factory ──
@@ -147,8 +184,6 @@ export function createEvalEngine(config: EvalEngineConfig) {
     hedgeEnabled: boolean;
     deadlineMs: number;
     requestTimeoutMs: number;
-    jobType?: string;
-    offerTemplate?: string;
   }): Promise<EvalSuccess | EvalFailure> {
     const startedAt = Date.now();
     const deadlineAt = startedAt + params.deadlineMs;
@@ -157,7 +192,7 @@ export function createEvalEngine(config: EvalEngineConfig) {
     const deadlineCtrl = new AbortController();
     const deadlineTimer = setTimeout(() => deadlineCtrl.abort(), params.deadlineMs);
 
-    const systemPrompt = config.getSystemPrompt(params.jobType, params.offerTemplate);
+    const systemPrompt = config.getSystemPrompt();
     const baseMessages: ChatMessage[] = [
       { role: "system", content: systemPrompt, cache_control: { type: "ephemeral" } },
       { role: "user", content: params.jobText },
@@ -359,8 +394,6 @@ export function createEvalEngine(config: EvalEngineConfig) {
     const rawJob = parsed.data.jobText.trim();
     const metaRaw = parsed.data.meta;
     const asyncMode = parsed.data.async;
-    const jobType = parsed.data.jobType;
-    const offerTemplate = parsed.data.offerTemplate;
 
     let toNormalize = rawJob;
     if (looksLikeHtml(rawJob)) {
@@ -371,7 +404,7 @@ export function createEvalEngine(config: EvalEngineConfig) {
     const jobText = normalizeJobText(toNormalize);
     if (!jobText) {
       return NextResponse.json({
-        error: "Nach Bereinigung war kein lesbarer Jobtext übrig. Bitte Titel und Beschreibung als Text einfügen oder weniger Seiten-HTML.",
+        error: "Nach Bereinigung war kein lesbarer Jobtext übrig.",
       }, { status: 400 });
     }
 
@@ -392,7 +425,7 @@ export function createEvalEngine(config: EvalEngineConfig) {
     const cached = getCached(jobText, config.cacheNamespace);
     if (cached) {
       if (asyncMode) {
-        const jobId = makeEvalJobId();
+        const jobId = makeId();
         const now = Date.now();
         evalJobs.set(jobId, {
           id: jobId, status: "done", createdAt: now, updatedAt: now,
@@ -419,7 +452,7 @@ export function createEvalEngine(config: EvalEngineConfig) {
           return NextResponse.json({ jobId: existingJobId }, { status: 202 });
         }
 
-        const jobId = makeEvalJobId();
+        const jobId = makeId();
         const now = Date.now();
         evalJobs.set(jobId, { id: jobId, status: "queued", createdAt: now, updatedAt: now, jobTextUsed: jobText });
 
@@ -436,7 +469,6 @@ export function createEvalEngine(config: EvalEngineConfig) {
             const r = await evaluateWithPolicy({
               apiKey, jobText, primaryModel, fallbackModel, repairEnabled, hedgeEnabled,
               deadlineMs: asyncDeadlineMs, requestTimeoutMs: asyncReqTimeoutMs,
-              jobType, offerTemplate,
             });
 
             const rr = evalJobs.get(jobId);
@@ -458,6 +490,7 @@ export function createEvalEngine(config: EvalEngineConfig) {
 
             setCache(jobText, r.result, r.jobTextUsed, r.quality, config.cacheNamespace);
             markSeenBestEffort(jobText, logMeta);
+            autoSaveToDB(r.result, r.jobTextUsed, logMeta); // ← Phase 2: Auto-Save
             await logResult(r, logMeta);
           } catch (e) {
             const r = evalJobs.get(jobId);
@@ -476,7 +509,7 @@ export function createEvalEngine(config: EvalEngineConfig) {
       // Sync path
       const r = await evaluateWithPolicy({
         apiKey, jobText, primaryModel, fallbackModel, repairEnabled, hedgeEnabled,
-        deadlineMs, requestTimeoutMs, jobType, offerTemplate,
+        deadlineMs, requestTimeoutMs,
       });
 
       if (!r.ok) {
@@ -485,6 +518,7 @@ export function createEvalEngine(config: EvalEngineConfig) {
 
       setCache(jobText, r.result, r.jobTextUsed, r.quality, config.cacheNamespace);
       markSeenBestEffort(jobText, logMeta);
+      autoSaveToDB(r.result, r.jobTextUsed, logMeta); // ← Phase 2: Auto-Save
       await logResult(r, logMeta);
 
       return NextResponse.json({ ...(r.result as object), jobTextUsed: r.jobTextUsed });

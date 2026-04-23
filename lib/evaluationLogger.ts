@@ -1,6 +1,6 @@
 import { appendFile, mkdir } from "fs/promises";
 import path from "path";
-import type { EvaluationResultAny } from "@/types";
+import type { EvaluationResultQuickCash } from "@/types";
 
 const LOG_DIR = path.join(process.cwd(), "logs");
 const LOG_FILE = path.join(LOG_DIR, "evaluations.jsonl");
@@ -12,7 +12,7 @@ function loggingEnabled(): boolean {
 
 export type EvaluationLogPayload = {
   jobTextUsed: string;
-  result: EvaluationResultAny;
+  result: EvaluationResultQuickCash;
   model: string;
   quality?: {
     winnerModel?: string;
@@ -58,11 +58,6 @@ export async function appendEvaluationLog(
     return Array.isArray(v) ? v.length : undefined;
   };
 
-  const isV2 = (obj: unknown): boolean =>
-    !!obj &&
-    typeof obj === "object" &&
-    typeof (obj as Record<string, unknown>).viable_build_20h === "boolean";
-
   const record = {
     ts: new Date().toISOString(),
     model: payload.model,
@@ -74,10 +69,10 @@ export async function appendEvaluationLog(
     counts: {
       risks: arrayLen(payload.result, "risks"),
       steps: arrayLen(payload.result, "steps"),
-      next_steps: arrayLen(payload.result, "next_steps"),
-      clarifying_questions: arrayLen(payload.result, "clarifying_questions"),
+      questions: arrayLen(payload.result, "questions"),
+      red_flags: arrayLen(payload.result, "red_flags"),
     },
-    outputVersion: isV2(payload.result) ? "v2" : "v1",
+    outputVersion: "quick_cash",
   };
 
   try {

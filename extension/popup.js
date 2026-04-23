@@ -138,24 +138,17 @@ feedBtn.addEventListener("click", async () => {
     showStatus("Öffne App...", "info");
 
     const jobText = data.jobs.map((j) => j.jobText).join("\n---JOBSPLIT---\n");
-    const param = encodeURIComponent(jobText);
-
-    // URL length limit ~2MB in Chrome, but use POST fallback for large payloads
-    if (param.length > 50000) {
-      // Store on local server to avoid URL limits
-      const res = await fetch(`${getServerUrl()}/api/extension/pending`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jobText }),
-      });
-      const payload = await res.json().catch(() => ({}));
-      if (!res.ok || !payload?.id) {
-        throw new Error(payload?.error || "Konnte Payload nicht an Server senden.");
-      }
-      chrome.tabs.create({ url: `${getServerUrl()}?autoEvalId=${encodeURIComponent(payload.id)}` });
-    } else {
-      chrome.tabs.create({ url: `${getServerUrl()}?autoEval=${param}` });
+    // Always use pending API for multi-job batches to avoid URL/header limits (HTTP 431).
+    const res = await fetch(`${getServerUrl()}/api/extension/pending`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jobText }),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok || !payload?.id) {
+      throw new Error(payload?.error || "Konnte Payload nicht an Server senden.");
     }
+    chrome.tabs.create({ url: `${getServerUrl()}?autoEvalId=${encodeURIComponent(payload.id)}` });
 
     showStatus(`${data.count} Jobs gesendet!`, "ok");
   } catch (err) {
@@ -194,22 +187,17 @@ searchQuickBtn.addEventListener("click", async () => {
     showStatus("Öffne App (Quick Cash)...", "info");
 
     const jobText = data.jobs.map((j) => j.jobText).join("\n---JOBSPLIT---\n");
-    const param = encodeURIComponent(jobText);
-
-    if (param.length > 50000) {
-      const res = await fetch(`${getServerUrl()}/api/extension/pending`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jobText }),
-      });
-      const payload = await res.json().catch(() => ({}));
-      if (!res.ok || !payload?.id) {
-        throw new Error(payload?.error || "Konnte Payload nicht an Server senden.");
-      }
-      chrome.tabs.create({ url: `${getServerUrl()}?autoEvalId=${encodeURIComponent(payload.id)}&mode=quick_cash` });
-    } else {
-      chrome.tabs.create({ url: `${getServerUrl()}?autoEval=${param}&mode=quick_cash` });
+    // Always use pending API for multi-job batches to avoid URL/header limits (HTTP 431).
+    const res = await fetch(`${getServerUrl()}/api/extension/pending`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jobText }),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok || !payload?.id) {
+      throw new Error(payload?.error || "Konnte Payload nicht an Server senden.");
     }
+    chrome.tabs.create({ url: `${getServerUrl()}?autoEvalId=${encodeURIComponent(payload.id)}&mode=quick_cash` });
 
     showStatus(`${data.count} Jobs gesendet (Quick Cash)!`, "ok");
   } catch (err) {

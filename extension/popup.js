@@ -95,7 +95,7 @@ extractBtn.addEventListener("click", async () => {
     }
 
     const data = await executeInTab(tab.id, "extract-job.js");
-    if (!data?.jobText || data.charCount < 50) {
+    if (!data?.upworkJobId || !data?.jobUrl || !data?.title) {
       showStatus("Kein Job-Text gefunden. Bist du auf einer Job-Detailseite?", "err");
       return;
     }
@@ -103,9 +103,18 @@ extractBtn.addEventListener("click", async () => {
     showJobCount(1);
     showStatus("Öffne App...", "info");
 
-    const param = encodeURIComponent(data.jobText);
-    chrome.tabs.create({ url: `${getServerUrl()}?autoEval=${param}` });
-    showStatus("Gesendet!", "ok");
+    // Store payload server-side, then open Inbox.
+    const res = await fetch(`${getServerUrl()}/api/extension/pending`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jobs: [data] }),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok || !payload?.id) {
+      throw new Error(payload?.error || "Konnte Payload nicht an Server senden.");
+    }
+    chrome.tabs.create({ url: `${getServerUrl()}/inbox?autoImportId=${encodeURIComponent(payload.id)}` });
+    showStatus("Gesendet (Inbox)!", "ok");
   } catch (err) {
     showStatus(err.message || "Fehler beim Extrahieren.", "err");
   } finally {
@@ -137,18 +146,17 @@ feedBtn.addEventListener("click", async () => {
     showJobCount(data.count);
     showStatus("Öffne App...", "info");
 
-    const jobText = data.jobs.map((j) => j.jobText).join("\n---JOBSPLIT---\n");
     // Always use pending API for multi-job batches to avoid URL/header limits (HTTP 431).
     const res = await fetch(`${getServerUrl()}/api/extension/pending`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ jobText }),
+      body: JSON.stringify({ jobs: data.jobs }),
     });
     const payload = await res.json().catch(() => ({}));
     if (!res.ok || !payload?.id) {
       throw new Error(payload?.error || "Konnte Payload nicht an Server senden.");
     }
-    chrome.tabs.create({ url: `${getServerUrl()}?autoEvalId=${encodeURIComponent(payload.id)}` });
+    chrome.tabs.create({ url: `${getServerUrl()}/inbox?autoImportId=${encodeURIComponent(payload.id)}` });
 
     showStatus(`${data.count} Jobs gesendet!`, "ok");
   } catch (err) {
@@ -186,18 +194,17 @@ searchQuickBtn.addEventListener("click", async () => {
     showJobCount(data.count);
     showStatus("Öffne App (Quick Cash)...", "info");
 
-    const jobText = data.jobs.map((j) => j.jobText).join("\n---JOBSPLIT---\n");
     // Always use pending API for multi-job batches to avoid URL/header limits (HTTP 431).
     const res = await fetch(`${getServerUrl()}/api/extension/pending`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ jobText }),
+      body: JSON.stringify({ jobs: data.jobs }),
     });
     const payload = await res.json().catch(() => ({}));
     if (!res.ok || !payload?.id) {
       throw new Error(payload?.error || "Konnte Payload nicht an Server senden.");
     }
-    chrome.tabs.create({ url: `${getServerUrl()}?autoEvalId=${encodeURIComponent(payload.id)}&mode=quick_cash` });
+    chrome.tabs.create({ url: `${getServerUrl()}/inbox?autoImportId=${encodeURIComponent(payload.id)}&mode=quick_cash` });
 
     showStatus(`${data.count} Jobs gesendet (Quick Cash)!`, "ok");
   } catch (err) {

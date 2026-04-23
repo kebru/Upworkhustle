@@ -17,7 +17,8 @@
   if (!jobIdMatch) {
     return { jobText: "", charCount: 0, isJobDetail: false, pageUrl: url };
   }
-  const jobUrl = `https://www.upwork.com/jobs/~${jobIdMatch[1]}`;
+  const upworkJobId = jobIdMatch[1];
+  const jobUrl = `https://www.upwork.com/jobs/~${upworkJobId}`;
 
   // Title
   const titleEl =
@@ -64,28 +65,20 @@
     jobType = text(jtEl);
   }
 
-  // Build full job text like user would paste
-  const parts = [];
-  if (title) parts.push(title);
-  if (jobUrl) parts.push(`URL: ${jobUrl}`);
-  if (jobType) parts.push(jobType);
-  if (budget) parts.push(budget);
-  if (duration) parts.push(duration);
-  if (description) parts.push(description);
-  if (skills.length > 0) parts.push("Skills: " + skills.join(", "));
-
-  const jobText = parts.join("\n\n");
+  const capturedAt = new Date().toISOString();
 
   return {
-    jobText,
+    upworkJobId,
     title,
     jobUrl,
+    description,
     budget,
     duration,
     jobType,
     skills,
-    source: "upwork_feed",
-    charCount: jobText.length,
+    source: "extension_job_detail",
+    capturedAt,
+    charCount: (title || description || "").length,
     isJobDetail: true,
   };
 })();

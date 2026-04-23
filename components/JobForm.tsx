@@ -8,13 +8,14 @@ type EvalMode = "sidehustle" | "quick_cash";
 
 type Props = {
   onSubmit: (text: string, jobType: JobType, offerTemplateId: string | undefined, mode: EvalMode) => void;
+  onImportToInbox?: (text: string) => void;
   loading: boolean;
   offerTemplates?: { id: string; name: string }[];
   value: string;
   onChange: (val: string) => void;
 };
 
-export function JobForm({ onSubmit, loading, offerTemplates, value, onChange }: Props) {
+export function JobForm({ onSubmit, onImportToInbox, loading, offerTemplates, value, onChange }: Props) {
   const jobText = value;
   const setJobText = onChange;
   const [jobType, setJobType] = useState<JobType>("Automatisch");
@@ -149,6 +150,16 @@ export function JobForm({ onSubmit, loading, offerTemplates, value, onChange }: 
         >
           {loading ? "Bewerte…" : "Jetzt bewerten"}
         </button>
+        {onImportToInbox && (
+          <button
+            type="button"
+            disabled={loading || !jobText.trim()}
+            onClick={() => onImportToInbox(jobText)}
+            className="w-full rounded-lg border border-white/15 bg-transparent px-4 py-3 text-sm font-semibold text-white/85 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+          >
+            In Inbox importieren (ohne KI)
+          </button>
+        )}
         <span className="ml-3 hidden text-xs text-muted sm:inline">Ctrl+Enter</span>
       </form>
     </>

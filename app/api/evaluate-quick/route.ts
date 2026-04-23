@@ -10,6 +10,7 @@ function buildLogMeta(metaRaw: unknown): Record<string, unknown> | undefined {
     source: meta.source === "upwork_feed" || meta.source === "text" ? meta.source : undefined,
     title: typeof meta.title === "string" ? meta.title : undefined,
     jobUrl: typeof meta.jobUrl === "string" ? meta.jobUrl : undefined,
+    upworkJobId: typeof meta.upworkJobId === "string" ? meta.upworkJobId : undefined,
     postedOn: typeof meta.postedOn === "string" ? meta.postedOn : undefined,
     budget: typeof meta.budget === "string" ? meta.budget : undefined,
     duration: typeof meta.duration === "string" ? meta.duration : undefined,

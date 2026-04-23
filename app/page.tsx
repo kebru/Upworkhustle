@@ -14,7 +14,7 @@ import { extractUpworkJobId } from "@/lib/upwork-job-id";
 import { parseJobs, startEval, pollEval, streamEval } from "@/lib/api-client";
 import type { PollResp } from "@/lib/api-client";
 import { POLL_INTERVAL_MS, POLL_TIMEOUT_MS, CONCURRENCY } from "@/lib/constants";
-import type { EvaluationResultAny, ParsedJob } from "@/types";
+import type { CanonicalUpworkJob, EvaluationResultAny, ParsedJob } from "@/types";
 import type { JobType } from "@/lib/eval-prompts";
 import { useOfferTemplates } from "@/hooks/useOfferTemplates";
 import { FeedRefreshButton } from "@/components/FeedRefreshButton";
@@ -79,6 +79,8 @@ function HomePage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const autoEvalTriggered = useRef(false);
+  const submitTokenRef = useRef(0);
+  const activeUnsubsRef = useRef<Set<() => void>>(new Set());
   const [loading, setLoading] = useState(false);
   const [draftJobText, setDraftJobText] = useState("");
   const [runs, setRuns] = useState<JobRun[]>([]);
@@ -86,6 +88,9 @@ function HomePage() {
   const [toastVisible, setToastVisible] = useState(false);
   const [toastMessage, setToastMessage] = useState("Gespeichert");
   const [skippedCount, setSkippedCount] = useState(0);
+  const [lastParseTotal, setLastParseTotal] = useState(0);
+  const [lastParseRemaining, setLastParseRemaining] = useState(0);
+  const lastRemainingJobsRef = useRef<Array<{ jobText: string; jobUrl?: string }>>([]);
 
   const { save, saveMany } = useEvaluationHistory();
   const { isSeen, markSeen, refresh: refreshSeen, ready: seenReady } = useSeenJobs();
@@ -115,6 +120,12 @@ function HomePage() {
     offerTemplateId?: string,
     mode: "sidehustle" | "quick_cash" = "sidehustle",
   ) {
+    const submitToken = ++submitTokenRef.current;
+    for (const unsub of Array.from(activeUnsubsRef.current)) {
+      try { unsub(); } catch { /* ignore */ }
+    }
+    activeUnsubsRef.current.clear();
+
     setCurrentMode(mode);
     setCurrentJobType(jobType);
     const tpl = offerTemplateId ? getTemplateById(offerTemplateId) : undefined;
@@ -147,6 +158,7 @@ function HomePage() {
     }
 
     const totalBefore = parsedJobs.length;
+    setLastParseTotal(totalBefore);
     // First: dedup within the current input (same job appearing twice in a feed/modal export)
     const seenInBatch = new Set<string>();
     parsedJobs = parsedJobs.filter((j) => {
@@ -161,6 +173,8 @@ function HomePage() {
     parsedJobs = parsedJobs.filter((j) => !isSeen(j.jobText, j.jobUrl));
     const skipped = totalBefore - parsedJobs.length;
     setSkippedCount(skipped);
+    setLastParseRemaining(parsedJobs.length);
+    lastRemainingJobsRef.current = parsedJobs.map((j) => ({ jobText: j.jobText, jobUrl: j.jobUrl }));
 
     if (parsedJobs.length === 0) {
       setError(
@@ -194,12 +208,16 @@ function HomePage() {
 
     try {
       const startAndPollOne = async (i: number) => {
+        const run = initialRuns[i];
+        const runId = run.id;
+        const runMode = run.mode ?? "sidehustle";
+
+        if (submitToken !== submitTokenRef.current) return;
+
         setRuns((prev) =>
-          prev.map((r, j) => (j === i ? { ...r, status: "loading" as const } : r)),
+          prev.map((r) => (r.id === runId ? { ...r, status: "loading" as const } : r)),
         );
 
-        const run = initialRuns[i];
-        const runMode = run.mode ?? "sidehustle";
         const jobId = await startEval(runMode, run.jobText, {
           mode: run.mode,
           source: run.source,
@@ -220,17 +238,30 @@ function HomePage() {
           ? undefined
           : { jobType: currentJobType !== "Automatisch" ? currentJobType : undefined, offerTemplate: currentOfferTemplate });
 
+        if (submitToken !== submitTokenRef.current) return;
+
         setRuns((prev) =>
-          prev.map((r, j) => (j === i ? { ...r, evaluationJobId: jobId } : r)),
+          prev.map((r) => (r.id === runId ? { ...r, evaluationJobId: jobId } : r)),
         );
 
         const applyResult = (p: PollResp) => {
+          if (submitToken !== submitTokenRef.current) return true; // ignore stale updates
           if (p.status === "done" && p.result) {
             markSeen([{ jobText: run.jobText, jobUrl: run.jobUrl }]);
             setRuns((prev) =>
-              prev.map((r, j) =>
-                j === i
-                  ? { ...r, status: "done" as const, result: p.result, jobText: typeof p.jobTextUsed === "string" && p.jobTextUsed.length > 0 ? p.jobTextUsed : r.jobText }
+              prev.map((r) =>
+                r.id === runId
+                  ? {
+                      ...r,
+                      status: "done" as const,
+                      result: p.result,
+                      jobText: typeof p.jobTextUsed === "string" && p.jobTextUsed.length > 0 ? p.jobTextUsed : r.jobText,
+                      title:
+                        r.title ??
+                        (typeof p.jobTextUsed === "string"
+                          ? p.jobTextUsed.match(/(?:^|\n)\s*TITLE:\s*(.+)\s*(?:\n|$)/i)?.[1]?.trim()
+                          : undefined),
+                    }
                   : r,
               ),
             );
@@ -238,8 +269,8 @@ function HomePage() {
           }
           if (p.status === "error") {
             setRuns((prev) =>
-              prev.map((r, j) =>
-                j === i
+              prev.map((r) =>
+                r.id === runId
                   ? { ...r, status: "error" as const, error: typeof p.error === "string" && p.error.length > 0 ? p.error : "Bewertung fehlgeschlagen." }
                   : r,
               ),
@@ -264,9 +295,11 @@ function HomePage() {
                 resolve();
               }
             });
+            activeUnsubsRef.current.add(unsub);
             const checkTimeout = () => {
               if (timer.foregroundMs() >= POLL_TIMEOUT_MS) {
                 unsub();
+                activeUnsubsRef.current.delete(unsub);
                 if (!fallbackTriggered) { fallbackTriggered = true; timer.dispose(); resolve(); }
               } else {
                 setTimeout(checkTimeout, 2000);
@@ -275,7 +308,7 @@ function HomePage() {
             setTimeout(checkTimeout, 2000);
           });
           const currentRuns = await new Promise<JobRun[]>((res) => setRuns((prev) => { res(prev); return prev; }));
-          const cur = currentRuns[i];
+          const cur = currentRuns.find((r) => r.id === runId);
           if (cur && (cur.status === "done" || cur.status === "error")) return;
         }
 
@@ -283,6 +316,7 @@ function HomePage() {
         const timer = createForegroundTimer();
         while (timer.foregroundMs() < POLL_TIMEOUT_MS) {
           await waitForVisible();
+          if (submitToken !== submitTokenRef.current) { timer.dispose(); return; }
           const p = await pollEval(runMode, jobId);
           if (applyResult(p)) { timer.dispose(); return; }
           await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
@@ -290,8 +324,8 @@ function HomePage() {
         timer.dispose();
 
         setRuns((prev) =>
-          prev.map((r, j) =>
-            j === i
+          prev.map((r) =>
+            r.id === runId
               ? { ...r, status: "error" as const, error: "Timeout beim Warten auf die Bewertung. Bitte erneut versuchen." }
               : r,
           ),
@@ -306,9 +340,10 @@ function HomePage() {
             try {
               await startAndPollOne(i);
             } catch (err) {
+              if (submitToken !== submitTokenRef.current) return;
               setRuns((prev) =>
-                prev.map((r, j) =>
-                  j === i
+                prev.map((r) =>
+                  r.id === initialRuns[i]?.id
                     ? {
                         ...r,
                         status: "error" as const,
@@ -328,6 +363,91 @@ function HomePage() {
       await Promise.all(workers);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleMarkRemainingAsSeen() {
+    const jobs = lastRemainingJobsRef.current;
+    if (!jobs.length) return;
+
+    // #region agent log
+    fetch("http://127.0.0.1:7308/ingest/d7c7c2de-211a-48e0-83e3-49047ff29be5", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "827bfa" },
+      body: JSON.stringify({
+        sessionId: "827bfa",
+        runId: "pre-fix",
+        hypothesisId: "H2",
+        location: "app/page.tsx:handleMarkRemainingAsSeen",
+        message: "mark remaining as seen",
+        data: { remaining: jobs.length, lastParseTotal, skippedCount },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion agent log
+
+    markSeen(jobs);
+    await refreshSeen();
+    showToast(jobs.length === 1 ? "Als gesehen markiert" : `${jobs.length} Jobs als gesehen markiert`);
+  }
+
+  function parsedJobToCanonical(j: ParsedJob): CanonicalUpworkJob | null {
+    const text = j.jobText || "";
+    const title =
+      j.title ??
+      text.match(/(?:^|\n)\s*TITLE:\s*(.+)\s*(?:\n|$)/i)?.[1]?.trim() ??
+      "";
+    const jobUrl =
+      j.jobUrl ??
+      text.match(/(?:^|\n)\s*URL:\s*(https?:\/\/[^\s]+)\s*(?:\n|$)/i)?.[1]?.trim() ??
+      "";
+    const upworkJobId =
+      (jobUrl ? extractUpworkJobId(jobUrl) : undefined) ??
+      extractUpworkJobId(text) ??
+      "";
+    const skillsLine = text.match(/(?:^|\n)\s*SKILLS:\s*(.+)\s*(?:\n|$)/i)?.[1]?.trim();
+    const skills = skillsLine ? skillsLine.split(",").map((s) => s.trim()).filter(Boolean) : (j.skills ?? []);
+    const desc = text.split(/\nDESCRIPTION:\n/i)[1]?.trim() ?? "";
+    if (!upworkJobId || !jobUrl || !title || !desc) return null;
+    return {
+      upworkJobId,
+      jobUrl,
+      title,
+      description: desc,
+      skills,
+      postedOn: j.postedOn,
+      jobType: j.jobType,
+      budget: j.budget,
+      duration: j.duration,
+      contractorTier: j.contractorTier,
+      source: "paste_fallback",
+      capturedAt: new Date().toISOString(),
+      raw: { source: j.source },
+    };
+  }
+
+  async function handleImportToInbox(rawText: string) {
+    setError(null);
+    try {
+      const parsedJobs = await parseJobs(rawText);
+      const canonical = parsedJobs.map(parsedJobToCanonical).filter((x): x is CanonicalUpworkJob => x !== null);
+      if (canonical.length === 0) {
+        setError("Konnte keine kanonischen Jobs aus dem Paste-Text ableiten. Tipp: nutze die Extension oder füge Upwork Search/Feed HTML ein.");
+        return;
+      }
+      const res = await fetch("/api/inbox/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jobs: canonical }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(typeof data?.error === "string" ? data.error : "Import fehlgeschlagen.");
+        return;
+      }
+      router.push("/inbox");
+    } catch (e) {
+      setError(e && typeof e === "object" && "message" in e ? String((e as { message: unknown }).message) : "Import fehlgeschlagen.");
     }
   }
 
@@ -496,13 +616,12 @@ function HomePage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const handleFeedJobs = useCallback((feedJobs: ParsedJob[]) => {
+  function handleFeedJobs(feedJobs: ParsedJob[]) {
     const newJobs = feedJobs.filter((j) => !isSeen(j.jobText, j.jobUrl));
     if (newJobs.length === 0) return;
     const jobText = newJobs.map((j) => j.jobText).join("\n---JOBSPLIT---\n");
     handleSubmit(jobText, currentJobType, undefined, currentMode);
-  }, [isSeen, currentJobType, currentMode]);
+  }
 
   const doneCount = runs.filter((r) => r.status === "done").length;
 
@@ -510,6 +629,7 @@ function HomePage() {
     <div className="space-y-8">
       <JobForm
         onSubmit={handleSubmit}
+        onImportToInbox={handleImportToInbox}
         loading={loading}
         offerTemplates={offerTemplates.map((t) => ({ id: t.id, name: t.name }))}
         value={draftJobText}
@@ -519,7 +639,23 @@ function HomePage() {
 
       {skippedCount > 0 && (
         <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
-          {skippedCount} bereits bewertete{skippedCount === 1 ? "r Job" : " Jobs"} übersprungen.
+          <div>
+            {skippedCount} bereits bewertete{skippedCount === 1 ? "r Job" : " Jobs"} übersprungen.
+            {lastParseTotal > 0 && (
+              <span className="text-amber-200/80"> ({lastParseRemaining} von {lastParseTotal} werden angezeigt)</span>
+            )}
+          </div>
+          {lastParseRemaining > 0 && (
+            <div className="mt-2">
+              <button
+                type="button"
+                onClick={handleMarkRemainingAsSeen}
+                className="rounded-md border border-amber-400/40 bg-transparent px-3 py-1.5 text-xs font-semibold text-amber-200 transition hover:bg-amber-400/10"
+              >
+                Übrige {lastParseRemaining} als gesehen markieren (ohne KI)
+              </button>
+            </div>
+          )}
         </div>
       )}
 

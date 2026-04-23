@@ -85,6 +85,60 @@ export type EvaluationResultAny = EvaluationResult | EvaluationResultV2 | Evalua
 
 export type EvalMode = "sidehustle" | "quick_cash";
 
+/**
+ * Canonical Upwork Job payload (extension-first).
+ * This is the single source of truth for identity + metadata.
+ */
+export type InboxJobSource =
+  | "extension_job_detail"
+  | "extension_feed"
+  | "extension_search"
+  | "paste_fallback";
+
+export interface CanonicalUpworkJob {
+  upworkJobId: string; // "~<digits>" without "~"
+  jobUrl: string;
+  title: string;
+  description: string;
+  skills: string[];
+  postedOn?: string;
+  jobType?: string;
+  budget?: string;
+  duration?: string;
+  contractorTier?: string;
+  source: InboxJobSource;
+  capturedAt: string; // ISO
+  raw?: Record<string, unknown>; // optional extra fields (no secrets)
+}
+
+export type InboxJobStatus =
+  | "new"
+  | "evaluating"
+  | "evaluated"
+  | "archived"
+  | "skipped_seen";
+
+export interface InboxJobRow {
+  upworkJobId: string;
+  jobUrl: string;
+  title: string;
+  description: string;
+  skills: string[];
+  postedOn?: string;
+  jobType?: string;
+  budget?: string;
+  duration?: string;
+  contractorTier?: string;
+  source: InboxJobSource;
+  status: InboxJobStatus;
+  importedAt: string; // ISO
+  lastSeenAt: string; // ISO
+  evaluationId?: string;
+  lastEvalMode?: EvalMode;
+  // convenience pre-render text used for evaluation
+  jobText: string;
+}
+
 export interface SavedEvaluation {
   id: string;
   savedAt: string;

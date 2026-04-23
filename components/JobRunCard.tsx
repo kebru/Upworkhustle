@@ -36,7 +36,16 @@ type Props = {
   onRetry?: () => void;
 };
 
+function titleFromJobText(text: string): string | undefined {
+  const m = text.match(/(?:^|\n)\s*TITLE:\s*(.+)\s*(?:\n|$)/i);
+  const raw = m?.[1]?.trim();
+  if (!raw) return undefined;
+  const cleaned = raw.replace(/^\*+|\*+$/g, "").trim();
+  return cleaned.length >= 2 ? cleaned.slice(0, 180) : undefined;
+}
+
 export function JobRunCard({ run, index, onSave, onRetry }: Props) {
+  const headline = run.title || titleFromJobText(run.jobText) || extractJobHeadline(run.jobText);
   return (
     <section className="rounded-xl border border-white/10 bg-surface/40 p-4 sm:p-5">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-2 border-b border-white/10 pb-3">
@@ -50,7 +59,7 @@ export function JobRunCard({ run, index, onSave, onRetry }: Props) {
             </span>
           )}
           <p className="mt-1 text-sm font-medium leading-snug text-white">
-            {run.title || extractJobHeadline(run.jobText)}
+            {headline}
           </p>
           {(run.postedOn ||
             run.jobType ||

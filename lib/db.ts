@@ -1,6 +1,6 @@
 import path from "path";
 import fs from "fs";
-import type { SavedEvaluation, EvaluationResultAny } from "@/types";
+import type { CanonicalUpworkJob, InboxJobRow, InboxJobSource, InboxJobStatus, SavedEvaluation, EvaluationResultAny, EvalMode } from "@/types";
 
 const DB_PATH = process.env.DB_PATH || path.join(process.cwd(), "data", "evaluations.db");
 
@@ -24,6 +24,7 @@ let _warned = false;
 // In-memory fallback (Dev-friendly when native addon fails)
 const memEvaluations = new Map<string, SavedEvaluation>();
 const memSeenByHash = new Map<string, { upworkJobId?: string; seenAt: string }>();
+const memInboxJobs = new Map<string, InboxJobRow>();
 
 function warnOnce(msg: string, extra?: unknown) {
   if (_warned) return;
@@ -98,6 +99,35 @@ function tryLoadSqlite(): SqliteDb | null {
       `);
     }
 
+    if (version < 2) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS inbox_jobs (
+          upwork_job_id TEXT PRIMARY KEY,
+          job_url TEXT NOT NULL,
+          title TEXT NOT NULL,
+          description TEXT NOT NULL,
+          skills TEXT NOT NULL DEFAULT '[]',
+          posted_on TEXT,
+          job_type TEXT,
+          budget TEXT,
+          duration TEXT,
+          contractor_tier TEXT,
+          source TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'new',
+          imported_at TEXT NOT NULL,
+          last_seen_at TEXT NOT NULL,
+          evaluation_id TEXT,
+          last_eval_mode TEXT,
+          job_text TEXT NOT NULL,
+          raw_json TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_inbox_job_url ON inbox_jobs(job_url);
+        CREATE INDEX IF NOT EXISTS idx_inbox_status ON inbox_jobs(status);
+        CREATE INDEX IF NOT EXISTS idx_inbox_last_seen_at ON inbox_jobs(last_seen_at);
+        PRAGMA user_version = 2;
+      `);
+    }
+
     return db;
   } catch (e) {
     warnOnce(
@@ -140,6 +170,49 @@ interface EvalRow {
   duration?: string | null;
   skills?: string | null;
   source?: string | null;
+}
+
+interface InboxRow {
+  upwork_job_id: string;
+  job_url: string;
+  title: string;
+  description: string;
+  skills: string;
+  posted_on?: string | null;
+  job_type?: string | null;
+  budget?: string | null;
+  duration?: string | null;
+  contractor_tier?: string | null;
+  source: string;
+  status: string;
+  imported_at: string;
+  last_seen_at: string;
+  evaluation_id?: string | null;
+  last_eval_mode?: string | null;
+  job_text: string;
+  raw_json?: string | null;
+}
+
+function rowToInboxJob(row: InboxRow): InboxJobRow {
+  return {
+    upworkJobId: row.upwork_job_id,
+    jobUrl: row.job_url,
+    title: row.title,
+    description: row.description,
+    skills: JSON.parse(row.skills || "[]") as string[],
+    postedOn: row.posted_on ?? undefined,
+    jobType: row.job_type ?? undefined,
+    budget: row.budget ?? undefined,
+    duration: row.duration ?? undefined,
+    contractorTier: row.contractor_tier ?? undefined,
+    source: row.source as InboxJobSource,
+    status: row.status as InboxJobStatus,
+    importedAt: row.imported_at,
+    lastSeenAt: row.last_seen_at,
+    evaluationId: row.evaluation_id ?? undefined,
+    lastEvalMode: (row.last_eval_mode as EvalMode | null) ?? undefined,
+    jobText: row.job_text,
+  };
 }
 
 function rowToEntry(row: EvalRow): SavedEvaluation {
@@ -413,4 +486,189 @@ export function dbGetAllEvaluationUpworkJobIds(): string[] {
     .prepare("SELECT DISTINCT upwork_job_id FROM evaluations WHERE upwork_job_id IS NOT NULL")
     .all() as Array<{ upwork_job_id: string }>;
   return rows.map((r) => r.upwork_job_id);
+}
+
+// ── Inbox Jobs ──
+
+function buildJobTextForInbox(job: Pick<CanonicalUpworkJob, "title" | "description" | "skills" | "postedOn" | "jobType" | "budget" | "duration" | "contractorTier" | "jobUrl">): string {
+  const parts: string[] = [];
+  parts.push(`TITLE: ${job.title}`);
+  if (job.postedOn) parts.push(`POSTED: ${job.postedOn}`);
+  if (job.jobType) parts.push(`TYPE: ${job.jobType}`);
+  if (job.contractorTier) parts.push(`LEVEL: ${job.contractorTier}`);
+  if (job.duration) parts.push(`DURATION: ${job.duration}`);
+  if (job.budget) parts.push(`BUDGET: ${job.budget}`);
+  parts.push(`URL: ${job.jobUrl}`);
+  if (job.skills.length) parts.push(`SKILLS: ${job.skills.slice(0, 10).join(", ")}`);
+  parts.push("");
+  parts.push("DESCRIPTION:");
+  parts.push(job.description);
+  return parts.join("\n");
+}
+
+export function dbInboxUpsertMany(jobs: CanonicalUpworkJob[]): { imported: number; updated: number } {
+  if (jobs.length === 0) return { imported: 0, updated: 0 };
+  ensureBackend();
+
+  const now = new Date().toISOString();
+  const normalizeSkills = (skills: string[]) =>
+    Array.from(new Set(skills.map((s) => s.trim()).filter(Boolean))).slice(0, 30);
+
+  if (_mode === "memory") {
+    let imported = 0;
+    let updated = 0;
+    for (const j of jobs) {
+      const skills = normalizeSkills(j.skills ?? []);
+      const jobText = buildJobTextForInbox({ ...j, skills });
+      const prev = memInboxJobs.get(j.upworkJobId);
+      if (prev) {
+        updated++;
+        memInboxJobs.set(j.upworkJobId, {
+          ...prev,
+          title: j.title,
+          description: j.description,
+          skills,
+          postedOn: j.postedOn,
+          jobType: j.jobType,
+          budget: j.budget,
+          duration: j.duration,
+          contractorTier: j.contractorTier,
+          jobUrl: j.jobUrl,
+          source: j.source,
+          lastSeenAt: now,
+          jobText,
+        });
+      } else {
+        imported++;
+        memInboxJobs.set(j.upworkJobId, {
+          upworkJobId: j.upworkJobId,
+          jobUrl: j.jobUrl,
+          title: j.title,
+          description: j.description,
+          skills,
+          postedOn: j.postedOn,
+          jobType: j.jobType,
+          budget: j.budget,
+          duration: j.duration,
+          contractorTier: j.contractorTier,
+          source: j.source,
+          status: "new",
+          importedAt: now,
+          lastSeenAt: now,
+          jobText,
+        });
+      }
+    }
+    return { imported, updated };
+  }
+
+  const db = getDb();
+  if (!db) {
+    // fallback to mem store
+    _mode = "memory";
+    return dbInboxUpsertMany(jobs);
+  }
+
+  const stmt = db.prepare(`
+    INSERT INTO inbox_jobs
+      (upwork_job_id, job_url, title, description, skills, posted_on, job_type, budget, duration, contractor_tier,
+       source, status, imported_at, last_seen_at, evaluation_id, last_eval_mode, job_text, raw_json)
+    VALUES
+      (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
+    ON CONFLICT(upwork_job_id) DO UPDATE SET
+      job_url=excluded.job_url,
+      title=excluded.title,
+      description=excluded.description,
+      skills=excluded.skills,
+      posted_on=excluded.posted_on,
+      job_type=excluded.job_type,
+      budget=excluded.budget,
+      duration=excluded.duration,
+      contractor_tier=excluded.contractor_tier,
+      source=excluded.source,
+      last_seen_at=excluded.last_seen_at,
+      job_text=excluded.job_text,
+      raw_json=excluded.raw_json
+  `);
+
+  const existsStmt = db.prepare("SELECT upwork_job_id FROM inbox_jobs WHERE upwork_job_id = ? LIMIT 1");
+
+  let imported = 0;
+  let updated = 0;
+
+  const runAll = db.transaction((items: CanonicalUpworkJob[]) => {
+    for (const j of items) {
+      const skills = normalizeSkills(j.skills ?? []);
+      const jobText = buildJobTextForInbox({ ...j, skills });
+      const exists = existsStmt.get(j.upworkJobId) as { upwork_job_id: string } | undefined;
+      if (exists) updated++; else imported++;
+      stmt.run(
+        j.upworkJobId,
+        j.jobUrl,
+        j.title,
+        j.description,
+        JSON.stringify(skills),
+        j.postedOn ?? null,
+        j.jobType ?? null,
+        j.budget ?? null,
+        j.duration ?? null,
+        j.contractorTier ?? null,
+        j.source,
+        "new",
+        now,
+        now,
+        jobText,
+        j.raw ? JSON.stringify(j.raw) : null,
+      );
+    }
+  });
+  runAll(jobs);
+  return { imported, updated };
+}
+
+export function dbInboxList(options?: { status?: InboxJobStatus; limit?: number; offset?: number }): InboxJobRow[] {
+  ensureBackend();
+  const status = options?.status;
+  const limit = Math.max(1, Math.min(200, options?.limit ?? 50));
+  const offset = Math.max(0, options?.offset ?? 0);
+
+  if (_mode === "memory") {
+    let arr = Array.from(memInboxJobs.values());
+    if (status) arr = arr.filter((j) => j.status === status);
+    arr.sort((a, b) => (a.lastSeenAt < b.lastSeenAt ? 1 : a.lastSeenAt > b.lastSeenAt ? -1 : 0));
+    return arr.slice(offset, offset + limit);
+  }
+
+  const db = getDb();
+  if (!db) return [];
+  const where = status ? "WHERE status = ?" : "";
+  const params: unknown[] = [];
+  if (status) params.push(status);
+  params.push(limit, offset);
+  const rows = db.prepare(`SELECT * FROM inbox_jobs ${where} ORDER BY last_seen_at DESC LIMIT ? OFFSET ?`).all(...params) as InboxRow[];
+  return rows.map(rowToInboxJob);
+}
+
+export function dbInboxGet(upworkJobId: string): InboxJobRow | undefined {
+  ensureBackend();
+  if (_mode === "memory") return memInboxJobs.get(upworkJobId);
+  const db = getDb();
+  if (!db) return undefined;
+  const row = db.prepare("SELECT * FROM inbox_jobs WHERE upwork_job_id = ? LIMIT 1").get(upworkJobId) as InboxRow | undefined;
+  return row ? rowToInboxJob(row) : undefined;
+}
+
+export function dbInboxSetStatus(upworkJobId: string, status: InboxJobStatus, patch?: { evaluationId?: string; lastEvalMode?: EvalMode }): void {
+  ensureBackend();
+  const now = new Date().toISOString();
+  if (_mode === "memory") {
+    const cur = memInboxJobs.get(upworkJobId);
+    if (!cur) return;
+    memInboxJobs.set(upworkJobId, { ...cur, status, lastSeenAt: now, ...(patch?.evaluationId ? { evaluationId: patch.evaluationId } : null), ...(patch?.lastEvalMode ? { lastEvalMode: patch.lastEvalMode } : null) });
+    return;
+  }
+  const db = getDb();
+  if (!db) return;
+  db.prepare("UPDATE inbox_jobs SET status = ?, last_seen_at = ?, evaluation_id = COALESCE(?, evaluation_id), last_eval_mode = COALESCE(?, last_eval_mode) WHERE upwork_job_id = ?")
+    .run(status, now, patch?.evaluationId ?? null, patch?.lastEvalMode ?? null, upworkJobId);
 }

@@ -39,6 +39,9 @@ export default function RootLayout({
               <Link href="/history" className="text-muted transition-colors hover:text-white">
                 Verlauf
               </Link>
+              <Link href="/inbox" className="text-muted transition-colors hover:text-white">
+                Inbox
+              </Link>
               <Link href="/compare" className="text-muted transition-colors hover:text-white">
                 Vergleich
               </Link>

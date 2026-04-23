@@ -1,4 +1,9 @@
 (() => {
+  function extractUpworkIdFromUrl(u) {
+    const m = String(u || "").match(/~(\d{10,})/);
+    return m ? m[1] : "";
+  }
+
   function text(el) {
     return el ? el.textContent.trim() : "";
   }
@@ -58,29 +63,22 @@
 
     const hasMore = !!qs('[data-test="job-description-line-clamp"]', tile);
 
-    const parts = [];
-    if (title) parts.push(`TITLE: ${title}`);
-    if (postedOn) parts.push(`POSTED: ${postedOn}`);
-    if (jobType) parts.push(`TYPE: ${jobType}`);
-    if (budget) parts.push(`BUDGET: ${budget}`);
-    if (duration) parts.push(`DURATION: ${duration}`);
-    if (jobUrl) parts.push(`URL: ${jobUrl}`);
-    if (skills.length > 0) parts.push(`SKILLS: ${skills.join(", ")}`);
-    parts.push("");
-    parts.push("DESCRIPTION:");
-    if (description) parts.push(description);
+    const upworkJobId = extractUpworkIdFromUrl(jobUrl);
+    const capturedAt = new Date().toISOString();
 
     return {
-      jobText: parts.join("\n\n"),
+      upworkJobId,
       title,
       jobUrl,
+      description,
       budget,
       duration,
       jobType,
       contractorTier,
       skills,
       postedOn,
-      source: "upwork_feed",
+      source: isSearchJobs ? "extension_search" : "extension_feed",
+      capturedAt,
       feedHasMoreToggle: hasMore,
       likelyTruncated: hasMore,
     };

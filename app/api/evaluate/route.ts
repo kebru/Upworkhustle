@@ -6,6 +6,7 @@ function buildLogMeta(metaRaw: unknown): Record<string, unknown> | undefined {
   if (!metaRaw || typeof metaRaw !== "object") return undefined;
   const meta = metaRaw as Record<string, unknown>;
   return {
+    mode: "sidehustle",
     source: meta.source === "upwork_feed" || meta.source === "text" ? meta.source : undefined,
     feedHasMoreToggle: typeof meta.feedHasMoreToggle === "boolean" ? meta.feedHasMoreToggle : undefined,
     likelyTruncated: typeof meta.likelyTruncated === "boolean" ? meta.likelyTruncated : undefined,
@@ -14,6 +15,7 @@ function buildLogMeta(metaRaw: unknown): Record<string, unknown> | undefined {
     wasTrimmed: typeof meta.wasTrimmed === "boolean" ? meta.wasTrimmed : undefined,
     title: typeof meta.title === "string" ? meta.title : undefined,
     jobUrl: typeof meta.jobUrl === "string" ? meta.jobUrl : undefined,
+    upworkJobId: typeof meta.upworkJobId === "string" ? meta.upworkJobId : undefined,
     postedOn: typeof meta.postedOn === "string" ? meta.postedOn : undefined,
     jobType: typeof meta.jobType === "string" ? meta.jobType : undefined,
     budget: typeof meta.budget === "string" ? meta.budget : undefined,

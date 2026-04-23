@@ -4,17 +4,18 @@ Bewertet Upwork-Job-Postings automatisch auf Eignung als Solo-Side-Hustle mit Cu
 
 ## Features
 
-- **Job-Bewertung**: Paste von Upwork-HTML oder Text → automatische Analyse
+- **Inbox (neu)**: Import → Dedup/Triage → selektiv bewerten (spart Kosten, weniger Fehler)
+- **Job-Bewertung**: Bewertung einzelner Jobs (Sidehustle / Quick Cash)
 - **AI-Coding-Fit**: Zentrale Bewertung ob der Job mit Vibe Coding (Cursor/Claude Code) umsetzbar ist
-- **Chrome Extension**: Ein-Klick Extraktion von Upwork Job-Seiten und Feed — keine manuelle Copy-Paste nötig
+- **Chrome Extension (primärer Weg)**: Extrahiert Upwork Jobs als kanonisches JSON (stabile Job-ID)
 - **Zwei Workflows**:
   - **Sidehustle** (BUILD ≤20h / CONSULTING Setup + Handover)
   - **Quick Cash**: Fokus auf schnelle, kleine Jobs (1–6h / max. 1 Tag) + Proposal auf Deutsch
-- **Multi-Job**: Mehrere Jobs gleichzeitig bewerten (Feed-HTML oder `---` Trenner)
+- **Copy/Paste Fallback**: HTML/Text einfügen → **„In Inbox importieren (ohne KI)“** oder bewerten
 - **Angebotstext-Generierung**: Separater LLM-Schritt mit ehrlicher Persona (Claude Sonnet 4) für Upwork-Proposals
 - **Dual-Model-Strategie**: Primary + Fallback Modell mit Deadline-Race
 - **JSON-Repair**: Automatische Reparatur fehlerhafter LLM-Responses
-- **Robuste Dedup**: Upwork Job-ID + Text-Hash, server-seitig persistent (SQLite)
+- **Robuste Dedup**: Upwork Job-ID + Text-Hash, server-seitig persistent (SQLite) + Inbox-Status
 - **Verlauf mit Filtern**: Score-Range, AI-Coding-Fit, Viable, Starred, Tags, Metadata-Anzeige
 - **Persistenz**: SQLite (Server) + localStorage (Client) mit automatischem Sync
 - **Caching**: Identische Jobs werden nicht doppelt evaluiert
@@ -74,7 +75,7 @@ npm run test:coverage # Tests mit Coverage
 
 ## Chrome Extension
 
-Die Extension extrahiert Jobs direkt von Upwork-Seiten — kein manuelles Copy-Paste nötig.
+Die Extension ist der **empfohlene, stabilste Weg**: sie extrahiert Jobs direkt im eingeloggten Browser-Kontext und sendet kanonische Job-Daten an die App. Die App öffnet danach die **Inbox**, wo du selektiv bewertest.
 
 ### Installation
 
@@ -85,14 +86,16 @@ Die Extension extrahiert Jobs direkt von Upwork-Seiten — kein manuelles Copy-P
 
 ### Nutzung
 
-- **Job-Detailseite** (`upwork.com/jobs/~XXX`): Klick auf "Job extrahieren & bewerten" → App öffnet sich mit laufender Evaluation
-- **Feed-Seite** (`/nx/find-work/...`): Klick auf "Feed-Seite extrahieren (alle Jobs)" → alle sichtbaren Jobs werden auf einmal extrahiert und bewertet
-- **Search Jobs Seite** (`/nx/search/jobs?...`): Klick auf **"Search Jobs → Quick Cash (alle Jobs)"** → alle sichtbaren Jobs werden extrahiert und im Quick-Cash Workflow bewertet
+- **Job-Detailseite** (`upwork.com/jobs/~XXX`): „Job extrahieren → Inbox“
+- **Feed-Seite** (`/nx/find-work/...`): „Feed extrahieren → Inbox (alle Jobs)“
+- **Search Jobs Seite** (`/nx/search/jobs?...`): „Search Jobs extrahieren → Inbox (alle Jobs)“
 
-### Quick Cash Modus
+In der Inbox kannst du dann pro Job **Quick Cash** oder **Sidehustle** bewerten (damit bleiben KI-Kosten niedrig und es gibt weniger Zuordnungsfehler).
 
-- In der App gibt es einen **Modus-Switch** (Sidehustle vs Quick Cash).
-- Die Extension öffnet die App mit `mode=quick_cash` (URL-Parameter), damit direkt der Quick-Cash Flow genutzt wird.
+### Copy/Paste Fallback
+
+- Du kannst weiterhin HTML/Text von Upwork einfügen.
+- Empfehlung: nutze den Button **„In Inbox importieren (ohne KI)“** und bewerte danach selektiv in `/inbox`.
 
 ### Sicherheit
 
@@ -102,6 +105,14 @@ Die Extension extrahiert Jobs direkt von Upwork-Seiten — kein manuelles Copy-P
 - **Nur bei Klick**: Extension wird nur aktiv wenn du den Button drückst (`activeTab` Permission)
 
 ## API-Endpoints
+
+### GET /inbox
+
+Inbox UI: Liste importierter Jobs (Filter via `?status=`).
+
+### POST /api/inbox/import
+
+Importiert kanonische Job-JSONs in die Inbox und dedupliziert gegen „gesehen/gespeichert“.
 
 ### POST /api/parse
 
@@ -164,6 +175,8 @@ Browser (page.tsx)
   │
   ├─ POST /api/parse ──→ HTML-Parsing (Cheerio) → Structured Jobs
   │
+  ├─ (empfohlen) Extension → Pending → POST /api/inbox/import → Inbox UI
+  │
   ├─ POST /api/evaluate ──→ Cache Check → LLM Race (Primary + Fallback)
   │                                         ├─ JSON Parse + Validate
   │                                         └─ Optional Repair Loop
@@ -184,6 +197,7 @@ Browser (page.tsx)
 ```
 app/
   page.tsx                  # Hauptseite (Job-Eingabe + Ergebnisse)
+  inbox/page.tsx            # Inbox: Import + Triage + selektiv bewerten
   history/page.tsx          # Gespeicherte Bewertungen mit Filtern
   compare/page.tsx          # Radar-Chart Vergleich (2-3 Jobs)
   stats/page.tsx            # Statistik-Dashboard
@@ -191,6 +205,9 @@ app/
   layout.tsx                # Root Layout mit Navigation
   api/
     parse/route.ts          # HTML → strukturierte Jobs
+    inbox/route.ts          # Liste Inbox-Jobs
+    inbox/import/route.ts   # Import in Inbox
+    inbox/[id]/route.ts     # Patch Status (archiv/seen/...)
     evaluate/route.ts       # LLM-Bewertung (async + sync)
     evaluate-quick/route.ts # Quick Cash Bewertung (async + sync)
     evaluations/route.ts    # CRUD für gespeicherte Bewertungen (SQLite)
